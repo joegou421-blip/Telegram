@@ -48,20 +48,28 @@ class DataFetcher:
         return self.get_ohlcv("SPY", days)
 
     def get_info(self, ticker: str) -> dict:
-        """抓取股票基本信息"""
-        try:
-            info = yf.Ticker(ticker).info
-            return {
-                "market_cap":    info.get("marketCap", 0),
-                "sector":        info.get("sector", "Unknown"),
-                "industry":      info.get("industry", "Unknown"),
-                "beta":          info.get("beta", 1.0),
-                "short_name":    info.get("shortName", ticker),
-                "earnings_date": self._get_next_earnings(ticker),
-            }
-        except Exception as e:
-            logger.warning(f"{ticker} info 失敗: {e}")
-            return {}
+        """抓取股票基本信息，加 retry 避免 429"""
+        for attempt in range(3):
+            try:
+                info = yf.Ticker(ticker).info
+                time.sleep(0.3)
+                return {
+                    "market_cap":    info.get("marketCap", 0),
+                    "sector":        info.get("sector", "Unknown"),
+                    "industry":      info.get("industry", "Unknown"),
+                    "beta":          info.get("beta", 1.0),
+                    "short_name":    info.get("shortName", ticker),
+                    "earnings_date": self._get_next_earnings(ticker),
+                }
+            except Exception as e:
+                if "429" in str(e):
+                    wait = (attempt + 1) * 15
+                    logger.warning(f"{ticker} info 429，等待 {wait}s...")
+                    time.sleep(wait)
+                else:
+                    logger.warning(f"{ticker} info 失敗: {e}")
+                    break
+        return {}
 
     def get_financials(self, ticker: str) -> dict:
         """抓取基本面數據"""
