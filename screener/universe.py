@@ -1,8 +1,10 @@
 import yfinance as yf
 import pandas as pd
 import time
+import random
 import logging
-from config.settings import SCREENER
+from config.settings import SCREENER, POLYGON_API_KEY
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -15,121 +17,173 @@ BASE_UNIVERSE = [
     "GS","MS","JPM","V","MA","PYPL","COIN",
     "XOM","CVX","EOG","SLB",
     "CAT","DE","HON","RTX","LMT","GE","ETN",
-    "NEE","DUK",
-    "AMT","PLD","EQIX",
-    "DIS","NFLX","SPOT","RBLX",
-    "UBER","ABNB","BKNG",
+    "NEE","DUK","AMT","PLD","EQIX",
+    "DIS","NFLX","SPOT","UBER","ABNB","BKNG",
     "MELI","SHOP",
 ]
 
+BATCH_SIZE = 10   # 每批幾隻
+BATCH_DELAY = 8   # 批次之間等幾秒
+
 
 def get_candidate_tickers() -> list:
-    """
-    第一層篩選：用 yfinance batch 下載減少請求，加 delay 避免限速
-    """
     logger.info(f"開始篩選，宇宙大小: {len(BASE_UNIVERSE)}")
 
-    # 用 batch 下載所有股票的歷史數據，一次請求搞定
-    # 比逐個請求減少 90% 的 API 調用
-    try:
-        logger.info("批量下載歷史數據...")
-        raw = yf.download(
-            tickers=BASE_UNIVERSE,
-            period="1y",
-            auto_adjust=True,
-            progress=False,
-            group_by="ticker",
-            threads=True,
-        )
-    except Exception as e:
-        logger.error(f"批量下載失敗: {e}")
+    # Step 1：分批 batch download，純價格篩選
+    price_passed = _batch_price_screen()
+    logger.info(f"價格/SMA篩選通過: {len(price_passed)} 隻")
+
+    if not price_passed:
         return []
 
-    passed = []
-    for ticker in BASE_UNIVERSE:
-        try:
-            if _passes_price_screen(ticker, raw):
-                passed.append(ticker)
-            time.sleep(0.1)  # 輕微 delay，避免後續 info 請求被限速
-        except Exception as e:
-            logger.debug(f"{ticker} 篩選失敗: {e}")
-
-    logger.info(f"價格篩選通過: {len(passed)} 隻，開始市值篩選...")
-
-    # 市值篩選單獨做，加 delay
-    final = []
-    for ticker in passed:
-        try:
-            if _passes_market_cap(ticker):
-                final.append(ticker)
-            time.sleep(0.5)  # 避免 429
-        except Exception as e:
-            logger.debug(f"{ticker} 市值篩選失敗: {e}")
-
-    logger.info(f"最終通過篩選: {len(final)} 隻")
+    # Step 2：只對通過的股票查市值（大幅減少請求次數）
+    final = _market_cap_screen(price_passed)
+    logger.info(f"最終通過: {len(final)} 隻")
     return final
 
 
-def _passes_price_screen(ticker: str, raw) -> bool:
-    """純價格和成交量篩選，用 batch 數據，不需要額外請求"""
-    try:
-        # 取出這隻股票的數據
-        if ticker in raw.columns.get_level_values(0):
-            df = raw[ticker].dropna()
-        else:
-            return False
+def _batch_price_screen() -> list:
+    """分批下載，每批加 delay，避免被封"""
+    passed = []
+    batches = [
+        BASE_UNIVERSE[i:i + BATCH_SIZE]
+        for i in range(0, len(BASE_UNIVERSE), BATCH_SIZE)
+    ]
 
-        if len(df) < 200:
-            return False
+    for i, batch in enumerate(batches):
+        logger.info(f"下載第 {i+1}/{len(batches)} 批: {batch}")
+        try:
+            # 加隨機 delay，避免固定頻率被識別
+            if i > 0:
+                delay = BATCH_DELAY + random.uniform(0, 3)
+                logger.info(f"等待 {delay:.1f}s...")
+                time.sleep(delay)
 
-        close  = df["Close"]
-        volume = df["Volume"]
-        price  = close.iloc[-1]
+            raw = yf.download(
+                tickers=" ".join(batch),
+                period="1y",
+                auto_adjust=True,
+                progress=False,
+                group_by="ticker",
+                threads=False,  # 關閉多線程，減少並發請求
+            )
 
-        if price < SCREENER["min_price"]:
-            return False
+            if raw.empty:
+                logger.warning(f"第 {i+1} 批下載失敗，跳過")
+                continue
 
-        # 月成交額
-        avg_vol_20     = volume.tail(20).mean()
-        monthly_dollar = avg_vol_20 * price * 20
-        if monthly_dollar < SCREENER["min_monthly_volume"]:
-            return False
+            for ticker in batch:
+                try:
+                    # 單隻股票時 columns 結構不同
+                    if len(batch) == 1:
+                        df = raw
+                    else:
+                        if ticker not in raw.columns.get_level_values(0):
+                            continue
+                        df = raw[ticker]
 
-        # SMA 篩選
-        sma200 = close.rolling(200).mean().iloc[-1]
-        sma50  = close.rolling(50).mean().iloc[-1]
+                    df = df.dropna()
+                    if _passes_price_filter(df):
+                        passed.append(ticker)
 
-        if price < sma200:
-            return False
-        if sma50 < sma200:
-            return False
-        if price < sma50:
-            return False
+                except Exception as e:
+                    logger.debug(f"{ticker} 篩選異常: {e}")
 
-        # 距 52 週高點
-        high_52w = close.tail(252).max()
-        if (high_52w - price) / high_52w > SCREENER["max_from_52w_high"]:
-            return False
+        except Exception as e:
+            logger.warning(f"第 {i+1} 批下載異常: {e}")
 
-        return True
+    return passed
 
-    except Exception as e:
-        logger.debug(f"{ticker} 價格篩選異常: {e}")
+
+def _passes_price_filter(df: pd.DataFrame) -> bool:
+    """純價格、SMA、成交量篩選，不需要額外請求"""
+    if len(df) < 200:
         return False
 
+    close  = df["Close"] if "Close" in df.columns else df["close"]
+    volume = df["Volume"] if "Volume" in df.columns else df["volume"]
+    price  = float(close.iloc[-1])
 
-def _passes_market_cap(ticker: str) -> bool:
-    """市值篩選，需要單獨請求（batch 沒有市值數據）"""
-    for attempt in range(3):  # 最多重試 3 次
+    if price < SCREENER["min_price"]:
+        return False
+
+    # 月成交額
+    avg_vol_20     = volume.tail(20).mean()
+    monthly_dollar = avg_vol_20 * price * 20
+    if monthly_dollar < SCREENER["min_monthly_volume"]:
+        return False
+
+    # SMA 排列
+    sma200 = close.rolling(200).mean().iloc[-1]
+    sma50  = close.rolling(50).mean().iloc[-1]
+
+    if price < sma200:
+        return False
+    if sma50 < sma200:
+        return False
+    if price < sma50:
+        return False
+
+    # 距 52 週高點
+    high_52w = close.tail(252).max()
+    if (high_52w - price) / high_52w > SCREENER["max_from_52w_high"]:
+        return False
+
+    return True
+
+
+def _market_cap_screen(tickers: list) -> list:
+    """
+    只對價格篩選通過的股票查市值
+    請求次數大幅減少（從 80 次降到 15-20 次）
+    """
+    passed = []
+    for ticker in tickers:
         try:
-            info    = yf.Ticker(ticker).fast_info  # 用 fast_info，比 info 快很多
-            mkt_cap = getattr(info, 'market_cap', 0) or 0
-            return mkt_cap >= SCREENER["min_market_cap"]
-        except Exception as e:
-            if "429" in str(e):
-                wait = (attempt + 1) * 10  # 10秒、20秒、30秒
-                logger.warning(f"{ticker} 429限速，等待 {wait} 秒...")
-                time.sleep(wait)
+            # 先試 Polygon（最穩定）
+            mkt_cap = _get_market_cap_polygon(ticker)
+
+            # Polygon 拿不到才用 yfinance
+            if mkt_cap is None:
+                time.sleep(1)
+                mkt_cap = _get_market_cap_yfinance(ticker)
+
+            if mkt_cap and mkt_cap >= SCREENER["min_market_cap"]:
+                passed.append(ticker)
+                logger.info(f"  ✓ {ticker} 市值 ${mkt_cap/1e9:.1f}B")
             else:
-                return False
-    return False
+                logger.debug(f"  ✗ {ticker} 市值不足")
+
+            time.sleep(0.5)
+
+        except Exception as e:
+            logger.debug(f"{ticker} 市值查詢失敗: {e}")
+            # 查不到市值就保留，讓後面的 agent 處理
+            passed.append(ticker)
+
+    return passed
+
+
+def _get_market_cap_polygon(ticker: str):
+    """用 Polygon 查市值"""
+    if not POLYGON_API_KEY:
+        return None
+    try:
+        url  = f"https://api.polygon.io/v3/reference/tickers/{ticker}?apiKey={POLYGON_API_KEY}"
+        resp = requests.get(url, timeout=8)
+        if resp.status_code == 200:
+            return resp.json().get("results", {}).get("market_cap")
+        if resp.status_code == 429:
+            time.sleep(15)
+    except Exception:
+        pass
+    return None
+
+
+def _get_market_cap_yfinance(ticker: str):
+    """用 yfinance 查市值，備用"""
+    try:
+        info = yf.Ticker(ticker).fast_info
+        return getattr(info, "market_cap", None)
+    except Exception:
+        return None
