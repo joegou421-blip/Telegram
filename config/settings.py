@@ -51,7 +51,7 @@ MARKET_GATE = {
 }
 
 # AI 模型
-AI_MODEL = "anthropic/claude-sonnet-4-5"
+AI_MODEL = "deepseek/deepseek-chat"
 
 # ATR 止損倍數
 ATR_MULTIPLIER   = 1.5
