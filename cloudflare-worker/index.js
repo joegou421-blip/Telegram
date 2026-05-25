@@ -1,341 +1,311 @@
-// cloudflare-worker/index.js
-// 部署到 Cloudflare Workers，處理 Telegram Webhook 雙向互動
-
-const TELEGRAM_TOKEN  = typeof TELEGRAM_BOT_TOKEN !== 'undefined' ? TELEGRAM_BOT_TOKEN : '';
-const OPENROUTER_KEY  = typeof OPENROUTER_API_KEY  !== 'undefined' ? OPENROUTER_API_KEY  : '';
-const SUPABASE_URL_CF = typeof SUPABASE_URL         !== 'undefined' ? SUPABASE_URL         : '';
-const SUPABASE_KEY_CF = typeof SUPABASE_KEY         !== 'undefined' ? SUPABASE_KEY         : '';
-
-const TG_API  = `https://api.telegram.org/bot${TELEGRAM_TOKEN}`;
-const AI_MODEL = 'anthropic/claude-sonnet-4-5';
+const AI_MODEL_FAST = 'deepseek/deepseek-v4-flash';
+const AI_MODEL_DEEP = 'deepseek/deepseek-v4-pro';
 
 export default {
   async fetch(request, env) {
     if (request.method !== 'POST') {
       return new Response('OK', { status: 200 });
     }
-
-    const update = await request.json();
-
-    // 處理按鈕點擊（callback query）
-    if (update.callback_query) {
-      await handleCallback(update.callback_query, env);
-      return new Response('OK');
+    let update;
+    try {
+      update = await request.json();
+    } catch (e) {
+      return new Response('Bad Request', { status: 400 });
     }
-
-    // 處理文字訊息
-    if (update.message?.text) {
-      await handleMessage(update.message, env);
-      return new Response('OK');
+    try {
+      if (update.callback_query) {
+        await handleCallback(update.callback_query, env);
+        return new Response('OK');
+      }
+      if (update.message?.text) {
+        await handleMessage(update.message, env);
+        return new Response('OK');
+      }
+    } catch (e) {
+      console.error('頂層錯誤:', e.message);
     }
-
     return new Response('OK');
   }
 };
 
-// ── 處理文字訊息 ──────────────────────────────────────────
+// ── 處理訊息 ─────────────────────────────────────────────
 
 async function handleMessage(msg, env) {
-  const chatId = msg.chat.id.toString();
+  const chatId = String(msg.chat.id);
   const text   = msg.text.trim();
+  console.log('收到訊息:', text);
 
-  // 分析個股：「分析 SNDK」或直接「SNDK」
-  const tickerMatch = text.match(/^(?:分析\s*)?([A-Z]{1,5})$/i);
-  if (tickerMatch) {
-    const ticker = tickerMatch[1].toUpperCase();
-    await sendTyping(chatId);
-    await analyzeStock(chatId, ticker, env);
+  if (text.startsWith('/')) {
+    await sendMessage(chatId,
+      '👋 歡迎使用 Swing Trade Agent！\n\n' +
+      '你可以：\n' +
+      '• 輸入股票代碼，例如：SNDK\n' +
+      '• 說「分析 SNDK」或「分析一下 SNDK」\n' +
+      '• 說「觀察清單」查看你的清單\n' +
+      '• 問任何股市相關問題\n\n' +
+      '個股分析約需 1-2 分鐘，結果會自動推送給你。',
+      null, env
+    );
     return;
   }
 
-  // 觀察清單查詢
+  // 識別股票代碼
+  const tickerMatch = text.match(
+    /(?:分析一下|分析|幫我分析|看看|分享一下)?[\s]*([A-Za-z]{1,5})[\s]*(?:的分析|怎樣|如何|好嗎|資料|信息)?$/
+  );
+
+  if (tickerMatch) {
+    const ticker   = tickerMatch[1].toUpperCase();
+    const excluded = ['HI', 'OK', 'NO', 'GO', 'IT', 'IS', 'BY', 'OR', 'AN'];
+    if (!excluded.includes(ticker)) {
+      await sendTyping(chatId, env);
+      await sendMessage(chatId,
+        `🔍 正在觸發 ${ticker} 的完整分析，約需 1-2 分鐘...\n結果會自動推送給你。`,
+        null, env
+      );
+      await triggerGithubAnalysis(ticker, env);
+      return;
+    }
+  }
+
+  // 觀察清單
   if (text.includes('觀察清單')) {
-    await sendTyping(chatId);
+    await sendTyping(chatId, env);
     await sendWatchlistSummary(chatId, env);
     return;
   }
 
-  // 其他問題：交給 AI 自由回答
-  await sendTyping(chatId);
-  const reply = await askAI(text, env);
-  await sendMessage(chatId, reply);
+  // 其他問題：AI 即時回答
+  await sendTyping(chatId, env);
+  const reply = await askAI(
+    `你是專業的美股 swing trader 助手。用繁體中文簡潔回答：${text}`,
+    AI_MODEL_FAST, env
+  );
+  await sendMessage(chatId, reply, null, env);
 }
 
 // ── 處理按鈕 ─────────────────────────────────────────────
 
 async function handleCallback(cb, env) {
-  const chatId = cb.message.chat.id.toString();
+  const chatId = String(cb.message.chat.id);
   const data   = cb.data;
   const cbId   = cb.id;
 
   if (data.startsWith('add_')) {
     const ticker = data.replace('add_', '');
-    const ok = await addToWatchlist(ticker, chatId, env);
-    await answerCallback(cbId, ok ? `${ticker} 已加入觀察清單` : '加入失敗，請稍後再試');
-    if (ok) {
-      // 更新訊息按鈕（加入後換成移除按鈕）
-      await editMessageKeyboard(chatId, cb.message.message_id, ticker, true);
-    }
+    const ok     = await addToWatchlist(ticker, env);
+    await answerCallback(cbId, ok ? `✅ ${ticker} 已加入觀察清單` : '加入失敗', env);
+    if (ok) await editKeyboard(chatId, cb.message.message_id, ticker, true, env);
     return;
   }
-
   if (data.startsWith('remove_')) {
     const ticker = data.replace('remove_', '');
-    const ok = await removeFromWatchlist(ticker, env);
-    await answerCallback(cbId, ok ? `${ticker} 已移除觀察清單` : '移除失敗');
-    if (ok) {
-      await editMessageKeyboard(chatId, cb.message.message_id, ticker, false);
-    }
+    const ok     = await removeFromWatchlist(ticker, env);
+    await answerCallback(cbId, ok ? `🗑 ${ticker} 已移除` : '移除失敗', env);
+    if (ok) await editKeyboard(chatId, cb.message.message_id, ticker, false, env);
     return;
   }
-
   if (data.startsWith('deep_')) {
     const ticker = data.replace('deep_', '');
-    await answerCallback(cbId, `正在深度分析 ${ticker}...`);
-    await sendTyping(chatId);
-    const analysis = await deepAnalysis(ticker, env);
-    await sendMessage(chatId, analysis);
+    await answerCallback(cbId, `正在深度分析 ${ticker}...`, env);
+    await sendTyping(chatId, env);
+    // 深度分析用 V4 Pro
+    const analysis = await deepAnalysis(ticker, AI_MODEL_DEEP, env);
+    await sendMessage(chatId, analysis, null, env);
     return;
   }
 }
 
-// ── 分析個股 ─────────────────────────────────────────────
+// ── 觸發 GitHub Actions 跑真實分析 ───────────────────────
 
-async function analyzeStock(chatId, ticker, env) {
-  // 抓數據 + 檢查觀察清單
-  const [stockData, watchlistEntry] = await Promise.all([
-    fetchStockData(ticker, env),
-    checkWatchlist(ticker, env),
-  ]);
-
-  if (!stockData) {
-    await sendMessage(chatId, `找不到 ${ticker} 的數據，請確認股票代碼是否正確。`);
-    return;
+async function triggerGithubAnalysis(ticker, env) {
+  try {
+    const url = `https://api.github.com/repos/${env.GITHUB_USERNAME}/${env.GITHUB_REPO}/actions/workflows/stock_scan.yml/dispatches`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${env.GITHUB_TOKEN}`,
+        'Accept':        'application/vnd.github.v3+json',
+        'Content-Type':  'application/json',
+      },
+      body: JSON.stringify({
+        ref:    'main',
+        inputs: { scan_ticker: ticker },
+      }),
+    });
+    console.log('GitHub Actions 觸發狀態:', res.status);
+    if (!res.ok) {
+      const err = await res.text();
+      console.error('GitHub Actions 觸發失敗:', err);
+    }
+  } catch (e) {
+    console.error('triggerGithubAnalysis:', e.message);
   }
-
-  const msg      = formatStockCard(ticker, stockData, watchlistEntry);
-  const keyboard = buildKeyboard(ticker, !!watchlistEntry);
-
-  await sendMessage(chatId, msg, keyboard);
 }
 
-// ── 觀察清單操作 ─────────────────────────────────────────
+// ── 觀察清單 ─────────────────────────────────────────────
 
 async function sendWatchlistSummary(chatId, env) {
   const list = await getWatchlist(env);
   if (!list || list.length === 0) {
-    await sendMessage(chatId, '你的觀察清單目前是空的。\n\n直接輸入股票代碼（例如 SNDK）可以分析並加入觀察清單。');
+    await sendMessage(chatId, '你的觀察清單目前是空的。\n\n輸入股票代碼可以分析並加入。', null, env);
     return;
   }
-
   let msg = `👁 觀察清單（${list.length} 隻）\n${'─'.repeat(20)}\n`;
   for (const item of list) {
-    const addedDate  = item.added_at?.slice(0, 10) || 'N/A';
-    const priceAdded = item.price_added || 'N/A';
-    msg += `\n📊 ${item.ticker}  ${item.short_name || ''}\n`;
-    msg += `   加入：${addedDate}  當時價格：$${priceAdded}\n`;
-    msg += `   評分：技術 ${item.tech_score} · 基本面 ${item.fund_score}\n`;
-    msg += `   止損：$${item.stop_loss || 'N/A'}\n`;
+    const gain = item.price_added && item.current_price
+      ? `  盈虧 ${((item.current_price - item.price_added) / item.price_added * 100).toFixed(1)}%`
+      : '';
+    msg += `\n📊 ${item.ticker}${item.short_name ? '  ' + item.short_name : ''}\n`;
+    msg += `   加入：${item.added_at?.slice(0, 10) || 'N/A'}  價格：$${item.price_added || 'N/A'}${gain}\n`;
+    msg += `   技術 ${item.tech_score ?? 'N/A'} · 基本面 ${item.fund_score ?? 'N/A'}\n`;
+    if (item.stop_loss) msg += `   止損：$${item.stop_loss}\n`;
   }
-  msg += `\n回覆「分析觀察清單」可重新評分所有股票。`;
-  await sendMessage(chatId, msg);
+  msg += '\n輸入股票代碼可重新觸發完整分析。';
+  await sendMessage(chatId, msg, null, env);
 }
 
-async function addToWatchlist(ticker, chatId, env) {
+async function addToWatchlist(ticker, env) {
   try {
-    const res = await fetch(`${SUPABASE_URL_CF}/rest/v1/watchlist`, {
+    await fetch(`${env.SUPABASE_URL}/rest/v1/watchlist`, {
       method:  'POST',
       headers: {
-        'apikey':        SUPABASE_KEY_CF,
-        'Authorization': `Bearer ${SUPABASE_KEY_CF}`,
-        'Content-Type':  'application/json',
-        'Prefer':        'return=minimal',
+        'apikey': env.SUPABASE_KEY, 'Authorization': `Bearer ${env.SUPABASE_KEY}`,
+        'Content-Type': 'application/json', 'Prefer': 'return=minimal',
       },
-      body: JSON.stringify({
-        ticker,
-        added_at: new Date().toISOString(),
-        status:   'watching',
-      }),
+      body: JSON.stringify({ ticker, added_at: new Date().toISOString(), status: 'watching' }),
     });
-    return res.ok;
-  } catch (e) {
-    console.error('addToWatchlist error:', e);
-    return false;
-  }
+    return true;
+  } catch (e) { return false; }
 }
 
 async function removeFromWatchlist(ticker, env) {
   try {
-    const res = await fetch(
-      `${SUPABASE_URL_CF}/rest/v1/watchlist?ticker=eq.${ticker}&status=eq.watching`,
+    await fetch(
+      `${env.SUPABASE_URL}/rest/v1/watchlist?ticker=eq.${ticker}&status=eq.watching`,
       {
-        method:  'PATCH',
+        method: 'PATCH',
         headers: {
-          'apikey':        SUPABASE_KEY_CF,
-          'Authorization': `Bearer ${SUPABASE_KEY_CF}`,
-          'Content-Type':  'application/json',
+          'apikey': env.SUPABASE_KEY, 'Authorization': `Bearer ${env.SUPABASE_KEY}`,
+          'Content-Type': 'application/json',
         },
         body: JSON.stringify({ status: 'removed', removed_at: new Date().toISOString() }),
       }
     );
-    return res.ok;
-  } catch (e) {
-    return false;
-  }
+    return true;
+  } catch (e) { return false; }
 }
 
 async function checkWatchlist(ticker, env) {
   try {
-    const res = await fetch(
-      `${SUPABASE_URL_CF}/rest/v1/watchlist?ticker=eq.${ticker}&status=eq.watching&select=*`,
-      {
-        headers: {
-          'apikey':        SUPABASE_KEY_CF,
-          'Authorization': `Bearer ${SUPABASE_KEY_CF}`,
-        },
-      }
+    const res  = await fetch(
+      `${env.SUPABASE_URL}/rest/v1/watchlist?ticker=eq.${ticker}&status=eq.watching&select=*`,
+      { headers: { 'apikey': env.SUPABASE_KEY, 'Authorization': `Bearer ${env.SUPABASE_KEY}` } }
     );
     const data = await res.json();
     return data?.[0] || null;
-  } catch (e) {
-    return null;
-  }
+  } catch (e) { return null; }
 }
 
 async function getWatchlist(env) {
   try {
     const res = await fetch(
-      `${SUPABASE_URL_CF}/rest/v1/watchlist?status=eq.watching&select=*&order=added_at.desc`,
-      {
-        headers: {
-          'apikey':        SUPABASE_KEY_CF,
-          'Authorization': `Bearer ${SUPABASE_KEY_CF}`,
-        },
-      }
+      `${env.SUPABASE_URL}/rest/v1/watchlist?status=eq.watching&select=*&order=added_at.desc`,
+      { headers: { 'apikey': env.SUPABASE_KEY, 'Authorization': `Bearer ${env.SUPABASE_KEY}` } }
     );
     return await res.json();
-  } catch (e) {
-    return [];
-  }
+  } catch (e) { return []; }
 }
 
 // ── 深度分析 ─────────────────────────────────────────────
 
-async function deepAnalysis(ticker, env) {
-  const prompt = `你是專業的 swing trader。請對 ${ticker} 做深度分析，包括：
-1. 技術面：當前形態品質、EMA 排列、成交量行為
-2. 基本面：EPS 增長動能、機構動向
-3. 大盤環境對這隻股票的影響
-4. 具體建議：現在是否適合進場？止損設在哪裡？
-請用繁體中文，條列清晰，控制在 200 字內。`;
-
-  return await askAI(prompt, env);
+async function deepAnalysis(ticker, model, env) {
+  return await askAI(
+    `你是專業的美股 swing trader。請用繁體中文深度分析 ${ticker}：
+1. 技術面：趨勢、EMA 排列、成交量、VCP 或 Cup & Handle 形態品質
+2. 基本面：EPS 增長動能、板塊強弱、機構動向
+3. 大盤環境的影響
+4. 具體建議：現在適合進場嗎？突破點、止損點、預期目標
+條列清晰，200 字內。`,
+    model, env
+  );
 }
 
 // ── AI 問答 ──────────────────────────────────────────────
 
-async function askAI(prompt, env) {
+async function askAI(prompt, model, env) {
   try {
     const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method:  'POST',
+      method: 'POST',
       headers: {
-        'Authorization': `Bearer ${OPENROUTER_KEY}`,
+        'Authorization': `Bearer ${env.OPENROUTER_API_KEY}`,
         'Content-Type':  'application/json',
+        'HTTP-Referer':  'https://swing-trade-agent.github.io',
+        'X-Title':       'Swing Trade Agent',
       },
       body: JSON.stringify({
-        model:      AI_MODEL,
-        max_tokens: 500,
+        model,
+        max_tokens: 600,
         messages:   [{ role: 'user', content: prompt }],
       }),
     });
+    console.log('OpenRouter 狀態:', res.status);
+    if (!res.ok) {
+      const err = await res.text();
+      console.error('OpenRouter 錯誤:', err);
+      return '分析失敗，請稍後再試。';
+    }
     const data = await res.json();
-    return data.choices?.[0]?.message?.content || '分析失敗，請稍後再試。';
+    return data.choices?.[0]?.message?.content?.trim() || '分析失敗，請稍後再試。';
   } catch (e) {
+    console.error('askAI:', e.message);
     return '目前無法連接 AI，請稍後再試。';
   }
 }
 
-// ── 格式化卡片 ───────────────────────────────────────────
+// ── Telegram 工具 ────────────────────────────────────────
 
-function formatStockCard(ticker, data, watchlistEntry) {
-  const watchlistLine = watchlistEntry
-    ? `👁 已在觀察清單（加入於 ${watchlistEntry.added_at?.slice(0,10)}，$${watchlistEntry.price_added}）\n`
-    : '';
-
-  return (
-    `━━━━━━━━━━━━━━━━\n` +
-    watchlistLine +
-    `📊 ${ticker}\n` +
-    `💰 $${data.price}  綜合評分：${data.composite_score}\n\n` +
-    `📈 技術面 ${data.tech_score}/100\n` +
-    `  EMA ${data.tech.breakdown.ema_alignment}/25  ` +
-    `RS ${data.tech.breakdown.rs_line}/20  ` +
-    `量 ${data.tech.breakdown.volume_struct}/20\n` +
-    `  形態 ${data.tech.breakdown.pattern}/25  ` +
-    `ATR ${data.tech.breakdown.atr_risk}/10\n\n` +
-    `💼 基本面 ${data.fund_score}/100\n` +
-    `  EPS ${data.fund.breakdown.eps_acceleration}/30  ` +
-    `營收 ${data.fund.breakdown.revenue_margin}/25\n` +
-    `  機構 ${data.fund.breakdown.institutional}/25  ` +
-    `Sector ${data.fund.breakdown.sector_strength}/20\n\n` +
-    `🎯 突破點 $${data.tech.details.breakout_point || 'N/A'}\n` +
-    `🛑 止損 $${data.tech.details.stop_loss}（ATR ${data.tech.details.atr_risk_pct}%）`
-  );
-}
-
-function buildKeyboard(ticker, inWatchlist) {
-  return {
-    inline_keyboard: [[
-      { text: '深度分析', callback_data: `deep_${ticker}` },
-      inWatchlist
-        ? { text: '移除觀察清單', callback_data: `remove_${ticker}` }
-        : { text: '加入觀察清單', callback_data: `add_${ticker}` },
-    ]],
-  };
-}
-
-// ── Telegram API 工具 ────────────────────────────────────
-
-async function sendMessage(chatId, text, replyMarkup = null) {
+async function sendMessage(chatId, text, replyMarkup, env) {
   const body = { chat_id: chatId, text, parse_mode: 'HTML' };
   if (replyMarkup) body.reply_markup = replyMarkup;
-  await fetch(`${TG_API}/sendMessage`, {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify(body),
-  });
+  try {
+    await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+  } catch (e) { console.error('sendMessage:', e.message); }
 }
 
-async function sendTyping(chatId) {
-  await fetch(`${TG_API}/sendChatAction`, {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({ chat_id: chatId, action: 'typing' }),
-  });
+async function sendTyping(chatId, env) {
+  try {
+    await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendChatAction`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, action: 'typing' }),
+    });
+  } catch (e) {}
 }
 
-async function answerCallback(callbackQueryId, text) {
-  await fetch(`${TG_API}/answerCallbackQuery`, {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({ callback_query_id: callbackQueryId, text }),
-  });
+async function answerCallback(cbId, text, env) {
+  try {
+    await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ callback_query_id: cbId, text }),
+    });
+  } catch (e) {}
 }
 
-async function editMessageKeyboard(chatId, messageId, ticker, inWatchlist) {
-  await fetch(`${TG_API}/editMessageReplyMarkup`, {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({
-      chat_id:      chatId,
-      message_id:   messageId,
-      reply_markup: buildKeyboard(ticker, inWatchlist),
-    }),
-  });
-}
-
-async function fetchStockData(ticker, env) {
-  // 這裡在真實環境中應該呼叫你的分析 API 或直接跑分析
-  // 暫時回傳 null，讓 Worker 知道需要整合 Python 分析結果
-  return null;
+async function editKeyboard(chatId, messageId, ticker, inWatchlist, env) {
+  const keyboard = {
+    inline_keyboard: [[
+      { text: '🔍 深度分析', callback_data: `deep_${ticker}` },
+      inWatchlist
+        ? { text: '🗑 移除觀察清單', callback_data: `remove_${ticker}` }
+        : { text: '👁 加入觀察清單', callback_data: `add_${ticker}` },
+    ]],
+  };
+  try {
+    await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageReplyMarkup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, message_id: messageId, reply_markup: keyboard }),
+    });
+  } catch (e) {}
 }
