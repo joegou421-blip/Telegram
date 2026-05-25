@@ -2,9 +2,14 @@ name: Swing Trade Agent
 
 on:
   schedule:
-    - cron: '30 10 * * 1-5'   # 美東 6:30am（UTC 10:30）
-    - cron: '30 20 * * 1-5'   # 美東 4:30pm（UTC 20:30）
+    - cron: '30 10 * * 1-5'   # 美東 6:30am
+    - cron: '30 20 * * 1-5'   # 美東 4:30pm
   workflow_dispatch:
+    inputs:
+      scan_ticker:
+        description: '單股分析（留空為全量掃描）'
+        required: false
+        default: ''
 
 jobs:
   scan:
@@ -12,11 +17,9 @@ jobs:
     timeout-minutes: 45
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
@@ -24,12 +27,9 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Random startup delay
-        # 隨機等 0-120 秒，避免每次固定時間觸發被 Yahoo 識別
-        run: |
-          DELAY=$((RANDOM % 120))
-          echo "等待 ${DELAY} 秒後開始..."
-          sleep $DELAY
+      - name: Random delay（全量掃描才需要）
+        if: ${{ github.event.inputs.scan_ticker == '' }}
+        run: sleep $((RANDOM % 120))
 
       - name: Run agent
         run: python main.py
@@ -40,3 +40,4 @@ jobs:
           TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
           SUPABASE_URL:       ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY:       ${{ secrets.SUPABASE_KEY }}
+          SCAN_TICKER:        ${{ github.event.inputs.scan_ticker }}
