@@ -1,15 +1,14 @@
 import numpy as np
 import pandas as pd
 import logging
-import requests
 from config.settings import (
     TECH_WEIGHTS, ATR_MULTIPLIER, MAX_ATR_RISK_PCT,
-    AI_MODEL_FAST, OPENROUTER_API_KEY
 )
 from data.indicators import (
     add_all_indicators, is_sma200_rising,
     calc_updown_volume_ratio, calc_volume_ratio,
-    calc_rs_rating, calc_volume_dryness, calc_weekly_ema_alignment
+    calc_rs_rating, calc_rs_score, calc_volume_dryness, calc_weekly_ema_alignment,
+    calc_institutional_sweep, calc_pullback_score
 )
 
 logger = logging.getLogger(__name__)
@@ -18,7 +17,7 @@ logger = logging.getLogger(__name__)
 class TechnicalAgent:
 
     def analyze(self, ticker: str, df: pd.DataFrame, spy_df: pd.DataFrame,
-                universe_closes: dict = None) -> dict:
+                universe_closes: dict = None, regime: str = "normal") -> dict:
         """
         完整技術面分析
         universe_closes: 所有股票的收盤價序列，用於計算 RS Rating 百分位
@@ -37,9 +36,30 @@ class TechnicalAgent:
         total = (ema_score + rs_score + weekly_score +
                  vol_score + dryness_score + pattern_res["score"] + atr_score)
 
+        # ── 個股評級（A/B/C）木桶效應 ───────────────────────
+        # 只有真正找到 VCP 形態（score > 0）才用 last_pullback_pct 評級
+        # 找不到形態 → 視為 B 級（有基本形態但不夠完美）
+        # 回測策略：用均線位置和量乾燥度判斷，不依賴 VCP 形態
+        grade, grade_reason = self._calc_stock_grade(df, last, dryness)
+
+        # ── 距 EMA20 距離（回測策略核心指標）─────────────────
+        breakout_point = pattern_res.get("breakout_point")
+        current_price  = last["close"]
+        ema20_val      = last.get("ema20", 0)
+        deviation_pct  = 0.0
+        if ema20_val and ema20_val > 0:
+            deviation_pct = (current_price - ema20_val) / ema20_val * 100
+
+        # ── 機構掃貨痕跡 + 回測買入排序分 ─────────────────────
+        sweep    = calc_institutional_sweep(df)
+        pullback = calc_pullback_score(df, spy_rs=rs_rating, regime=regime)
+
         return {
             "ticker":  ticker,
             "total":   round(total),
+            "grade":   grade,
+            "grade_reason": grade_reason,
+            "deviation_pct": round(deviation_pct, 2),
             "breakdown": {
                 "ema_alignment":  ema_score,
                 "rs_rating":      rs_score,
@@ -53,6 +73,7 @@ class TechnicalAgent:
                 "ema_layers_ok":      self._count_ema_layers(last),
                 "sma200_rising":      is_sma200_rising(df),
                 "rs_rating":          rs_rating,
+                "rs_raw_score":       calc_rs_score(df["close"], spy_df["close"] if spy_df is not None else None),
                 "rs_line_new_high":   self._rs_new_high(df),
                 "weekly_aligned":     weekly.get("aligned", False),
                 "weekly_ema10w":      weekly.get("ema10w"),
@@ -63,8 +84,11 @@ class TechnicalAgent:
                 "pattern_notes":      pattern_res["notes"],
                 "atr_risk_pct":       round(atr_risk_pct * 100, 1),
                 "stop_loss":          round(stop_loss, 2),
-                "entry_price":        round(last["close"], 2),
-                "breakout_point":     pattern_res.get("breakout_point"),
+                "entry_price":        round(current_price, 2),
+                "breakout_point":     breakout_point,
+                "last_pullback_pct":  pattern_res.get("last_pullback_pct"),
+                "institutional_sweep": sweep,
+                "pullback":           pullback,
             },
             "tags": self._build_tags(
                 ema_score, rs_rating, weekly, vol_score,
@@ -97,19 +121,23 @@ class TechnicalAgent:
         if spy_df is None:
             return 7.5, 50.0
         rating = calc_rs_rating(df["close"], spy_df["close"])
+        return self.rs_rating_to_score(rating), rating
+
+    @staticmethod
+    def rs_rating_to_score(rating: float) -> float:
+        """RS Rating (1-99) 換算成 RS breakdown 分數（滿分15）"""
         if rating >= 90:
-            score = 15
+            return 15
         elif rating >= 80:
-            score = 12
+            return 12
         elif rating >= 70:
-            score = 9
+            return 9
         elif rating >= 60:
-            score = 6
+            return 6
         elif rating >= 50:
-            score = 3
+            return 3
         else:
-            score = 0
-        return score, rating
+            return 0
 
     # ─── 週線趨勢確認（滿分 10）──────────────────────────────
 
@@ -166,13 +194,42 @@ class TechnicalAgent:
         cnh = self._detect_cup_and_handle(df)
         best = vcp if vcp["score"] >= cnh["score"] else cnh
         best["type"] = "VCP" if vcp["score"] >= cnh["score"] else "Cup & Handle"
-
-        if best["score"] >= 12 and OPENROUTER_API_KEY:
-            best["notes"] = self._ai_pattern_review(ticker, df, best)
-        else:
-            best["notes"] = best.get("notes", "形態不明顯")
-
+        best["notes"] = best.get("notes", "形態不明顯")
         return best
+
+    def _find_pivots(self, series, window: int = 5) -> list:
+        """
+        找價格序列的局部高點和低點（樞軸點）
+        window: 左右各比較幾個點
+        返回格式：[{"idx": i, "price": price, "type": "high"/"low"}, ...]
+        """
+        pivots = []
+        values = series.values
+        n      = len(values)
+
+        for i in range(window, n - window):
+            left  = values[i - window: i]
+            right = values[i + 1: i + window + 1]
+            val   = values[i]
+
+            if val >= max(left) and val >= max(right):
+                pivots.append({"idx": i, "price": val, "type": "high"})
+            elif val <= min(left) and val <= min(right):
+                pivots.append({"idx": i, "price": val, "type": "low"})
+
+        # 只保留交替出現的高低點（去除連續同類型）
+        filtered = []
+        for p in pivots:
+            if not filtered or filtered[-1]["type"] != p["type"]:
+                filtered.append(p)
+            else:
+                # 同類型取極值
+                if p["type"] == "high" and p["price"] > filtered[-1]["price"]:
+                    filtered[-1] = p
+                elif p["type"] == "low" and p["price"] < filtered[-1]["price"]:
+                    filtered[-1] = p
+
+        return filtered
 
     def _detect_vcp(self, df) -> dict:
         if len(df) < 60:
@@ -211,12 +268,14 @@ class TechnicalAgent:
             score += 5
             notes_list.append(f"最後回調 {contractions[-1]*100:.1f}%（緊縮良好）")
 
-        breakout_point = recent["high"].max()
+        breakout_point   = recent["high"].max()
+        last_pullback_pct = contractions[-1] * 100 if contractions else 999
         return {
-            "score":          min(score, TECH_WEIGHTS["pattern"]),
-            "notes":          " · ".join(notes_list),
-            "contractions":   contractions,
-            "breakout_point": round(breakout_point, 2),
+            "score":            min(score, TECH_WEIGHTS["pattern"]),
+            "notes":            " · ".join(notes_list),
+            "contractions":     contractions,
+            "breakout_point":   round(breakout_point, 2),
+            "last_pullback_pct": round(last_pullback_pct, 1),
         }
 
     def _detect_cup_and_handle(self, df) -> dict:
@@ -244,7 +303,10 @@ class TechnicalAgent:
             notes_list.append(f"杯子深度 {cup_depth*100:.1f}%（不理想）")
 
         current_price = closes[-1]
-        recovery = (current_price - cup_low_val) / (left_high_val - cup_low_val)
+        denom = left_high_val - cup_low_val
+        if denom <= 0:
+            return {"score": 0, "notes": "杯子高低點數據異常，無法計算"}
+        recovery = (current_price - cup_low_val) / denom
         if recovery >= 0.90:
             score += 10
             notes_list.append("右側回升至高點附近")
@@ -261,71 +323,157 @@ class TechnicalAgent:
 
     # ─── ATR 止損（滿分 5）───────────────────────────────────
 
-    def _score_atr(self, last) -> tuple:
-        entry_price = last["close"]
-        atr         = last["atr14"]
-        stop_loss   = entry_price - (atr * ATR_MULTIPLIER)
-        risk_pct    = (entry_price - stop_loss) / entry_price
+    def _calc_stock_grade(self, df, last, volume_dryness: float) -> tuple:
+        """
+        回測買入策略的個股分級（Pullback Trading）
+        判斷股價是否在均線附近且賣壓竭盡
 
-        if risk_pct <= 0.04:
-            score = 5
-        elif risk_pct <= 0.06:
-            score = 4
-        elif risk_pct <= 0.08:
-            score = 2
+        A 級：多頭排列 + 距EMA20在±1%以內 + 量乾燥度 < 50%
+        B 級：站上EMA50 + 距EMA20在1-3%以內 + 量乾燥度 50-65%
+        C 級：跌破EMA50 OR 量乾燥度 > 65% OR 距均線過遠
+        """
+        vdr          = volume_dryness * 100
+        price        = last["close"]
+        ema20        = last.get("ema20", 0)
+        ema50        = last.get("ema50", 0)
+
+        # 距 EMA20 的距離（百分比）
+        dist_ema20 = ((price - ema20) / ema20 * 100) if ema20 > 0 else 999
+        dist_ema50 = ((price - ema50) / ema50 * 100) if ema50 > 0 else 999
+
+        above_ema20 = price > ema20
+        above_ema50 = price > ema50
+
+        # ── C 級（一票否決）──────────────────────────────────
+        if not above_ema50:
+            return "C", f"跌破 EMA50，空頭結構，不做回測買入"
+
+        if vdr > 65:
+            return "C", f"量乾燥度 {vdr:.0f}% > 65%，賣壓未竭，繼續下跌風險高"
+
+        if dist_ema20 > 5:
+            return "C", f"距 EMA20 +{dist_ema20:.1f}%，股價過高，等待回落"
+
+        if dist_ema20 < -3:
+            return "C", f"距 EMA20 {dist_ema20:.1f}%，已跌破均線過深，趨勢破壞"
+
+        # ── A 級（完美回測）──────────────────────────────────
+        if above_ema20 and above_ema50 and abs(dist_ema20) <= 1 and vdr < 50:
+            return "A", (
+                f"完美回測：多頭排列，距EMA20 {dist_ema20:+.1f}%，"
+                f"量乾燥度 {vdr:.0f}%（賣壓竭盡）"
+            )
+
+        # EMA50 回測（股價跌到 EMA50 附近）
+        if above_ema50 and abs(dist_ema50) <= 1 and vdr < 50:
+            return "A", (
+                f"EMA50 回測：距EMA50 {dist_ema50:+.1f}%，"
+                f"量乾燥度 {vdr:.0f}%（關鍵支撐位買入）"
+            )
+
+        # ── B 級（可接受的回測）──────────────────────────────
+        if above_ema50 and abs(dist_ema20) <= 3 and vdr <= 65:
+            reasons = []
+            reasons.append(f"距EMA20 {dist_ema20:+.1f}%")
+            if vdr >= 50:
+                reasons.append(f"量乾燥度 {vdr:.0f}%（略高）")
+            return "B", "回測可接受：" + "，".join(reasons)
+
+        return "C", f"條件不符：距EMA20 {dist_ema20:+.1f}%，量乾燥度 {vdr:.0f}%"
+
+    def calc_position_size(self, grade: str, market_risk: str,
+                            deviation_pct: float) -> dict:
+        """
+        回測買入策略的倉位計算
+        deviation_pct = 距 EMA20 的距離（負數 = 在均線下方，正數 = 在均線上方）
+        market_risk: 'low'(BULL_NORMAL) / 'medium'(BULL_HOT等) / 'high'(BEAR等)
+        """
+        # 一票否決：大盤高風險
+        if market_risk == "high":
+            return {
+                "base_pct":  0,
+                "multiplier": 0,
+                "final_pct": 0,
+                "reason":    "大盤高風險，一票否決不開倉",
+            }
+
+        # C 級直接放棄
+        if grade == "C":
+            return {
+                "base_pct":  0,
+                "multiplier": 0,
+                "final_pct": 0,
+                "reason":    "個股 C 級，條件不符，放棄",
+            }
+
+        # 基礎倉位矩陣（回測策略止損窄，可以用較大倉位）
+        base_map = {
+            ("A", "low"):    10.0,
+            ("A", "medium"): 5.0,
+            ("B", "low"):    5.0,
+            ("B", "medium"): 2.5,
+        }
+        base_pct = base_map.get((grade, market_risk), 0)
+
+        # 距 EMA20 距離乘數
+        # 越接近均線，止損越窄，R:R 越好，倉位越大
+        abs_dist = abs(deviation_pct)
+        if abs_dist <= 1:
+            multiplier  = 1.0
+            mult_reason = f"距EMA20 {deviation_pct:+.1f}%，極佳入場點，正常倉位"
+        elif abs_dist <= 2:
+            multiplier  = 0.75
+            mult_reason = f"距EMA20 {deviation_pct:+.1f}%，良好入場點，倉位 75%"
+        elif abs_dist <= 3:
+            multiplier  = 0.5
+            mult_reason = f"距EMA20 {deviation_pct:+.1f}%，尚可入場，倉位減半"
         else:
-            score = 0
+            return {
+                "base_pct":  0,
+                "multiplier": 0,
+                "final_pct": 0,
+                "reason":    f"距EMA20 {deviation_pct:+.1f}% 超過 3%，不在回測買入窗口",
+            }
 
-        return score, stop_loss, risk_pct
+        final_pct = round(base_pct * multiplier, 1)
+        return {
+            "base_pct":    base_pct,
+            "multiplier":  multiplier,
+            "final_pct":   final_pct,
+            "mult_reason": mult_reason,
+            "reason":      f"個股{grade}級 + 大盤{market_risk}風險 → {base_pct}% × {multiplier} = {final_pct}%",
+        }
 
-    # ─── AI 形態複核 ──────────────────────────────────────────
-
-    def _ai_pattern_review(self, ticker, df, pattern) -> str:
-        try:
-            recent = df.tail(20)
-            price_data = [
-                f"{row.name.strftime('%Y-%m-%d')}: 收{row['close']:.2f} 量{int(row['volume'])}"
-                for _, row in recent.iterrows()
-            ]
-            prompt = (
-                f"你是專業的 swing trader。分析 {ticker} 的 {pattern['type']} 形態。\n"
-                f"數學分析：{pattern['notes']}\n"
-                f"近20天數據：\n" + "\n".join(price_data) +
-                f"\n\n用1-2句繁體中文說明形態品質和最值得注意的地方。不要重複數字，直接說結論。"
-            )
-            resp = requests.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                    "Content-Type":  "application/json",
-                    "HTTP-Referer":  "https://swing-trade-agent.github.io",
-                    "X-Title":       "Swing Trade Agent",
-                },
-                json={
-                    "model":      AI_MODEL_FAST,
-                    "max_tokens": 150,
-                    "messages":   [{"role": "user", "content": prompt}],
-                },
-                timeout=15,
-            )
-            resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"].strip()
-        except Exception as e:
-            logger.warning(f"AI 形態複核失敗: {e}")
-            return pattern.get("notes", "")
-
-    # ─── 輔助 ────────────────────────────────────────────────
-
-    def _find_pivots(self, series, window=5):
-        pivots = []
-        values = series.values
-        for i in range(window, len(values) - window):
-            segment = values[i - window: i + window + 1]
-            if values[i] == segment.max():
-                pivots.append({"idx": i, "price": values[i], "type": "high"})
-            elif values[i] == segment.min():
-                pivots.append({"idx": i, "price": values[i], "type": "low"})
-        return pivots
+    def calc_trade_management(self, entry_price: float, stop_loss: float) -> dict:
+        """
+        回測買入策略的持倉管理（止損極窄，R:R 高）
+        - 止損：EMA20/EMA50 下方 1.5-3%（已在 _score_atr 計算）
+        - 帳面 +8% → 止損移至保本（因止損窄，更快保本）
+        - 帳面 +15% → 賣出 1/3 鎖利
+        - 帳面 +25% → 再賣 1/3
+        - 剩餘倉位 → EMA20 移動停利
+        """
+        if entry_price <= 0:
+            return {}
+        initial_risk     = round((entry_price - stop_loss) / entry_price * 100, 1) if stop_loss > 0 else 0
+        breakeven_trigger = round(entry_price * 1.08, 2)
+        profit_target_1   = round(entry_price * 1.15, 2)
+        profit_target_2   = round(entry_price * 1.25, 2)
+        return {
+            "entry":             round(entry_price, 2),
+            "stop_loss":         round(stop_loss, 2),
+            "initial_risk_pct":  initial_risk,
+            "breakeven_trigger": breakeven_trigger,
+            "profit_target_1":   profit_target_1,
+            "profit_target_2":   profit_target_2,
+            "management_plan": [
+                f"初始止損：${stop_loss:.2f}（風險 {initial_risk:.1f}%，設在均線下方）",
+                f"股價觸及 ${breakeven_trigger} (+8%) → 止損移至保本 ${entry_price:.2f}",
+                f"股價觸及 ${profit_target_1} (+15%) → 賣出 1/3 倉位鎖利",
+                f"股價觸及 ${profit_target_2} (+25%) → 再賣 1/3 倉位",
+                "剩餘 1/3 倉位以 EMA20 作移動停利，收盤跌破 EMA20 全數出場",
+            ],
+        }
 
     def _count_ema_layers(self, last) -> int:
         return sum([
@@ -381,3 +529,21 @@ class TechnicalAgent:
             tags.append(("止損距離過大", "bad"))
 
         return tags
+
+    def _score_atr(self, last) -> tuple:
+        entry_price = last["close"]
+        atr         = last["atr14"]
+        stop_loss   = entry_price - (atr * ATR_MULTIPLIER)
+        risk_pct    = (entry_price - stop_loss) / entry_price
+
+        if risk_pct <= 0.04:
+            score = 5
+        elif risk_pct <= 0.06:
+            score = 4
+        elif risk_pct <= 0.08:
+            score = 2
+        else:
+            score = 0
+
+        return score, stop_loss, risk_pct
+

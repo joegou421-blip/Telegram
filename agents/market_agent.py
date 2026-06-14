@@ -53,8 +53,11 @@ class MarketAgent:
             gate = GATE_YELLOW
             logger.info("Follow-Through Day 偵測到，紅燈升為黃燈")
 
+        regime = self._classify_regime(gate, breadth, vix_data)
+
         return {
             "gate":    gate,
+            "regime":  regime,
             "summary": self._build_summary(gate, spy_data, qqq_data, vix_data, breadth, ftd, news),
             "ftd":     ftd,
             "details": {
@@ -66,6 +69,22 @@ class MarketAgent:
                 "news":    news,
             },
         }
+
+    def _classify_regime(self, gate: str, breadth: dict, vix: dict) -> str:
+        """
+        判斷市場是否處於「全面性放量多頭」(bull_hot)：
+        綠燈 + 市場寬度 ≥75% + VIX <17 → bull_hot（VDU 門檻放寬至 80%）
+        其他情況 → normal（VDU 門檻維持 65%）
+
+        門檻依過去400個交易日校準：VIX 中位數約17.5，
+        原 <15 門檻僅觸發6%的日子（幾乎死代碼）；
+        改為 <17 後觸發約28.5%的日子，且集中在大盤綠燈、波動平穩期間。
+        """
+        breadth_pct = breadth.get("pct", 0.5)
+        vix_val     = vix.get("value", 20)
+        if gate == GATE_GREEN and breadth_pct >= 0.75 and vix_val < 17:
+            return "bull_hot"
+        return "normal"
 
     def _analyze_index(self, ticker) -> dict:
         df = self.fetcher.get_ohlcv(ticker, days=200)

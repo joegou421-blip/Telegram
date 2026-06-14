@@ -14,56 +14,76 @@ SP500_NASDAQ100 = [
     "AAPL","MSFT","NVDA","GOOGL","GOOG","META","AMZN","TSLA","AVGO","ORCL",
     "AMD","CRM","ADBE","QCOM","TXN","AMAT","LRCX","KLAC","MRVL","SNDK",
     "NOW","SNOW","DDOG","PANW","CRWD","ZS","NET","FTNT","OKTA","S",
-    "PLTR","AXON","HUBS","TEAM","MDB","CFLT","GTLB","PATH","ZM","DOCU",
-    "UBER","LYFT","ABNB","BKNG","EXPE","AIRB",
-    "NFLX","DIS","CMCSA","WBD","PARA","FOX","FOXA",
-    "SPOT","RBLX","U","EA","TTWO","ATVI",
+    "PLTR","AXON","HUBS","TEAM","MDB","GTLB","PATH","ZM","DOCU",
+    "UBER","LYFT","ABNB","BKNG","EXPE",
+    "NFLX","DIS","CMCSA","WBD","FOX","FOXA",
+    "SPOT","RBLX","U","EA","TTWO",
     # 半導體
     "INTC","MU","ON","SWKS","QRVO","MPWR","ENTG","MKSI","COHU","UCTT",
     "WOLF","AEHR","ACLS","ONTO","FORM","ICHR","CAMT","RMBS","SLAB",
     # 金融
     "JPM","BAC","WFC","GS","MS","C","USB","PNC","TFC","COF",
-    "AXP","V","MA","PYPL","SQ","COIN","HOOD","SOFI","AFRM",
+    "AXP","V","MA","PYPL","COIN","HOOD","SOFI","AFRM",
     "BLK","SCHW","BX","APO","KKR","CG","ARES",
     "CB","MET","PRU","AFL","ALL","AIG","HIG","TRV",
     # 醫療
     "LLY","UNH","JNJ","ABBV","MRK","PFE","BMY","AMGN","GILD","REGN",
     "VRTX","BIIB","INCY","ALNY","MRNA","BNTX","NVAX",
     "ABT","TMO","DHR","A","IDXX","IQV","CRL","MEDP",
-    "ISRG","EW","SYK","BSX","MDT","ZBH","HOLX",
+    "ISRG","EW","SYK","BSX","MDT","ZBH",
     "CVS","CI","HUM","CNC","MOH","ELV",
     # 消費
     "AMZN","WMT","COST","TGT","HD","LOW","ORLY","AZO","AAP",
     "MCD","SBUX","CMG","YUM","DPZ","QSR","JACK",
-    "NKE","LULU","ONON","DECK","CROX","SKX","UA",
-    "TJX","ROST","BURL","GPS","ANF","AEO",
-    "PG","KO","PEP","MDLZ","GIS","K","CPB","CAG","SJM",
-    "EL","ULTA","COTY","REV",
+    "NKE","LULU","ONON","DECK","CROX","UA",
+    "TJX","ROST","BURL","ANF","AEO",
+    "PG","KO","PEP","MDLZ","GIS","CPB","CAG","SJM",
+    "EL","ULTA","COTY",
     # 工業
     "CAT","DE","HON","MMM","EMR","ROK","PH","ITW","GE","ETN",
     "RTX","LMT","NOC","GD","BA","HII","TDG","HEI","AXON",
     "UPS","FDX","XPO","SAIA","ODFL","CHRW","EXPD","JBHT",
     "URI","RSG","WM","CTAS","FAST","GWW","MSC","WSO",
     # 能源
-    "XOM","CVX","COP","EOG","PXD","DVN","FANG","MRO","APA","HES",
-    "SLB","HAL","BKR","OIS","WHD","NRGY",
+    "XOM","CVX","COP","EOG","DVN","FANG","APA",
+    "SLB","HAL","BKR","OIS","WHD",
     "PSX","VLO","MPC","DK","PBF",
-    "OKE","WMB","KMI","ET","EPD","MMP",
+    "OKE","WMB","KMI","ET","EPD",
     # 材料 / 基礎
     "LIN","APD","SHW","ECL","PPG","RPM","IFF","CE","EMN","HUN",
-    "NUE","STLD","CLF","X","AA","FCX","NEM","AEM","GOLD","KGC",
+    "NUE","STLD","CLF","AA","FCX","NEM","AEM","GOLD","KGC",
     "DD","DOW","LYB","WLK","OLN","CC",
     # REITs / 公用事業
     "AMT","PLD","EQIX","CCI","SBAC","DLR","ARE","BXP","VNO","SLG",
     "NEE","DUK","SO","AEP","EXC","PCG","ED","D","FE","ETR",
-    "AWK","WTR","CWT","SJW",
+    "AWK","CWT",
     # 電信
-    "T","VZ","TMUS","LBRDK","CHTR","CABO","WOW",
+    "T","VZ","TMUS","LBRDK","CHTR","CABO",
     # 其他成長股
-    "MELI","SE","GRAB","SHOP","ETSY","PINS","SNAP","TWTR",
+    "MELI","SE","GRAB","SHOP","ETSY","PINS","SNAP",
     "DKNG","MGM","WYNN","LVS","CZR","PENN",
-    "RIVN","LCID","NIO","LI","XPEV","NKLA",
-    "SPCE","ASTR","RKT","ACHR","JOBY",
+    "RIVN","LCID","NIO","LI","XPEV",
+    "SPCE","RKT","ACHR","JOBY",
+
+    # ── 中型高成長動能股（市值 10B-100B，RS 強勢）──────────
+    # 航太/國防科技
+    "RKLB","ASTS","LUNR","RDW",
+    # AI/數據中心
+    "SMCI","NTAP","PSTG","GFAI",
+    # 生技/醫療創新
+    "NBIS","RXRX","ACMR","AVXL",
+    # 能源/加密礦業
+    "IREN","CORZ","CIFR","HUT",
+    # 消費/品牌成長
+    "CELH","DUOL","MNDY","TMDX",
+    # 金融科技
+    "AFRM","UPST","GTLB",
+    # 工業/國防
+    "KTOS","CACI","LDOS",
+    # 醫療設備
+    "INSP","TNDM","NVCR",
+    # 軟件SaaS
+    "BILL","PCOR","SEMR",
 ]
 
 # 去重
@@ -181,7 +201,7 @@ def _market_cap_screen(tickers: list) -> list:
 
             if mkt_cap and mkt_cap >= SCREENER["min_market_cap"]:
                 passed.append(ticker)
-                logger.info(f"  ✓ {ticker} 市值 ${mkt_cap/1e9:.1f}B")
+                logger.info(f"  [OK] {ticker} 市值 ${mkt_cap/1e9:.1f}B")
             else:
                 logger.debug(f"  ✗ {ticker} 市值不足")
 

@@ -9,34 +9,12 @@ from config.settings import POLYGON_API_KEY
 
 logger = logging.getLogger(__name__)
 
-# 模擬瀏覽器 User-Agent，避免 Yahoo 封鎖 GitHub Actions IP
-BROWSER_HEADERS = {
-    'User-Agent': (
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-        'AppleWebKit/537.36 (KHTML, like Gecko) '
-        'Chrome/124.0.0.0 Safari/537.36'
-    ),
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-    'Accept-Language': 'en-US,en;q=0.5',
-    'Accept-Encoding': 'gzip, deflate, br',
-    'Connection': 'keep-alive',
-}
-
-
-def _make_yf_session() -> requests.Session:
-    """建立帶瀏覽器 header 的 requests session"""
-    session = requests.Session()
-    session.headers.update(BROWSER_HEADERS)
-    return session
-
 
 class DataFetcher:
-    """多源數據抓取，自動 fallback，解決數據缺失問題"""
 
     def __init__(self):
         self.polygon_key = POLYGON_API_KEY
         self.cache = {}
-        self._session = _make_yf_session()
 
     # ─── 公開接口 ────────────────────────────────────────────
 
@@ -45,7 +23,10 @@ class DataFetcher:
         if cache_key in self.cache:
             return self.cache[cache_key]
 
-        sources = [self._from_polygon, self._from_yfinance]
+        # 本地掃描：直接用 yfinance，不用 Polygon（本地 IP 沒被封）
+        # GitHub Actions 上才需要 Polygon
+        sources = [self._from_yfinance, self._from_polygon]
+
         for source in sources:
             try:
                 df = source(ticker, days)
@@ -64,53 +45,47 @@ class DataFetcher:
         return self.get_ohlcv("SPY", days)
 
     def get_info(self, ticker: str) -> dict:
-        """抓取股票基本信息，用瀏覽器 session 避免 429"""
+        """抓取股票基本信息"""
         for attempt in range(3):
             try:
-                t    = yf.Ticker(ticker, session=self._session)
+                t    = yf.Ticker(ticker)
                 info = t.info
-                time.sleep(0.5)
+                time.sleep(0.3)
                 return {
                     "market_cap":    info.get("marketCap", 0),
                     "sector":        info.get("sector", "Unknown"),
                     "industry":      info.get("industry", "Unknown"),
                     "beta":          info.get("beta", 1.0),
                     "short_name":    info.get("shortName", ticker),
-                    "earnings_date": self._get_next_earnings(ticker),
+                    "earnings_date": self.get_next_earnings(ticker),
                 }
             except Exception as e:
                 err = str(e)
                 if "429" in err:
-                    wait = (attempt + 1) * 20
+                    wait = (attempt + 1) * 15
                     logger.warning(f"{ticker} info 429，等待 {wait}s...")
                     time.sleep(wait)
-                    # 重建 session，換新連接
-                    self._session = _make_yf_session()
-                elif "401" in err or "Unauthorized" in err:
-                    logger.warning(f"{ticker} info 401，跳過")
-                    break
                 else:
                     logger.warning(f"{ticker} info 失敗: {e}")
                     break
         return {}
 
     def get_financials(self, ticker: str) -> dict:
-        """抓取基本面數據，用瀏覽器 session"""
+        """抓取基本面數據"""
         for attempt in range(3):
             try:
-                t      = yf.Ticker(ticker, session=self._session)
+                t      = yf.Ticker(ticker)
                 income = t.quarterly_financials
                 info   = t.info
-                time.sleep(0.5)
+                time.sleep(0.3)
 
                 eps_list = []
                 rev_list = []
-
                 if income is not None and not income.empty:
                     if "Net Income" in income.index:
-                        eps_list = income.loc["Net Income"].dropna().tolist()[:4]
+                        eps_list = income.loc["Net Income"].dropna().tolist()[:5]
                     if "Total Revenue" in income.index:
-                        rev_list = income.loc["Total Revenue"].dropna().tolist()[:4]
+                        rev_list = income.loc["Total Revenue"].dropna().tolist()[:5]
 
                 return {
                     "eps_quarters":         eps_list,
@@ -118,16 +93,13 @@ class DataFetcher:
                     "gross_margin":         info.get("grossMargins", 0),
                     "institutional_pct":    info.get("institutionPercent", 0),
                     "institutional_change": info.get("heldPercentInstitutions", 0),
-                    "forward_pe":           info.get("forwardPE", 0),
-                    "peg_ratio":            info.get("pegRatio", 0),
                 }
             except Exception as e:
                 err = str(e)
                 if "429" in err:
-                    wait = (attempt + 1) * 20
+                    wait = (attempt + 1) * 15
                     logger.warning(f"{ticker} financials 429，等待 {wait}s...")
                     time.sleep(wait)
-                    self._session = _make_yf_session()
                 else:
                     logger.warning(f"{ticker} financials 失敗: {e}")
                     break
@@ -135,7 +107,33 @@ class DataFetcher:
 
     # ─── 私有方法 ─────────────────────────────────────────────
 
+    def _from_yfinance(self, ticker: str, days: int) -> pd.DataFrame:
+        """yfinance 抓取 OHLCV，修復新版 MultiIndex columns bug"""
+        period = f"{days}d" if days <= 729 else "2y"
+        raw = yf.download(
+            ticker,
+            period=period,
+            auto_adjust=True,
+            progress=False,
+            threads=False,
+        )
+        if raw.empty:
+            raise ValueError(f"yfinance 無數據: {ticker}")
+
+        # 修復新版 yfinance MultiIndex columns 問題
+        if isinstance(raw.columns, pd.MultiIndex):
+            raw.columns = raw.columns.get_level_values(0)
+
+        # 統一小寫
+        raw.columns = [str(c).lower() for c in raw.columns]
+
+        if "close" not in raw.columns:
+            raise ValueError(f"yfinance 數據格式錯誤: {ticker}")
+
+        return raw
+
     def _from_polygon(self, ticker: str, days: int) -> pd.DataFrame:
+        """Polygon 備用數據源"""
         if not self.polygon_key:
             raise ValueError("無 Polygon API key")
 
@@ -147,6 +145,9 @@ class DataFetcher:
             f"?adjusted=true&sort=asc&limit=500&apiKey={self.polygon_key}"
         )
         resp = requests.get(url, timeout=10)
+        if resp.status_code == 429:
+            time.sleep(15)
+            raise ValueError(f"Polygon 429: {ticker}")
         resp.raise_for_status()
         data = resp.json()
 
@@ -162,25 +163,12 @@ class DataFetcher:
         df = df.set_index("date")[["open", "high", "low", "close", "volume"]]
         return df
 
-    def _from_yfinance(self, ticker: str, days: int) -> pd.DataFrame:
-        """yfinance 備用，用瀏覽器 session"""
-        period = f"{days}d" if days <= 729 else "2y"
-        df = yf.download(
-            ticker,
-            period=period,
-            auto_adjust=True,
-            progress=False,
-            session=self._session,
-        )
-        if df.empty:
-            raise ValueError(f"yfinance 無數據: {ticker}")
-        df.columns = [c.lower() for c in df.columns]
-        return df
-
     def _validate(self, df) -> bool:
         if df is None or df.empty:
             return False
         if len(df) < 60:
+            return False
+        if "close" not in df.columns:
             return False
         if df["close"].isnull().mean() > 0.05:
             return False
@@ -188,14 +176,19 @@ class DataFetcher:
             return False
         return True
 
-    def _get_next_earnings(self, ticker: str):
+    def get_next_earnings(self, ticker: str):
+        """回傳下一次財報日期（pd.Timestamp）或 None"""
         try:
-            t   = yf.Ticker(ticker, session=self._session)
+            t   = yf.Ticker(ticker)
             cal = t.calendar
-            if cal is not None and not cal.empty:
+            if isinstance(cal, dict):
                 dates = cal.get("Earnings Date", [])
-                if len(dates) > 0:
-                    return pd.Timestamp(dates[0])
+            elif cal is not None and not cal.empty:
+                dates = cal.get("Earnings Date", [])
+            else:
+                dates = []
+            if len(dates) > 0:
+                return pd.Timestamp(dates[0])
         except Exception:
             pass
         return None
