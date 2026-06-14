@@ -160,11 +160,17 @@ class TelegramNotifier:
         sector_block = ""
         sector_score = result.get("sector_score")
         if sector_score:
+            sector_name = result.get("sector", "Unknown")
+            eps_mult    = sector_score.get("eps_multiplier", 1.0)
             sector_block = (
-                f"\n🏷 板塊：{sector_score.get('label','')} "
-                f"排名{sector_score.get('rank_str','N/A')} · "
-                f"個股板塊排名 {sector_score.get('stock_rank_str','N/A')} · "
-                f"{sector_score.get('eps_label','')}"
+                f"\n\n🏷 板塊：{sector_name}\n"
+                f"RS排名：{sector_score.get('rank_str','N/A')} {sector_score.get('label','')}\n"
+                f"EPS狀態：{sector_score.get('eps_label','')} ×{eps_mult}\n"
+                f"板塊EPS YoY {sector_score.get('eps_yoy_pct',0):+.1f}% "
+                f"QoQ {sector_score.get('eps_qoq_pct',0):+.1f}%\n"
+                f"強勢股：{sector_score.get('hot_str','N/A')}（RS>80） "
+                f"板塊RS中位數：{sector_score.get('rs_median',0)}\n"
+                f"個股板塊內：RS {sector_score.get('stock_rank_str','N/A')}"
             )
 
         # 倉位建議
