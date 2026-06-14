@@ -140,6 +140,18 @@ class TechnicalAgent:
         else:
             return 0
 
+    @staticmethod
+    def rs_rating_tag(rating: float) -> tuple:
+        """RS Rating 對應的標籤文字與類型"""
+        if rating >= 85:
+            return (f"RS Rating {rating}（極強）", "ok")
+        elif rating >= 70:
+            return (f"RS Rating {rating}（強勢）", "ok")
+        elif rating >= 50:
+            return (f"RS Rating {rating}（中等）", "warn")
+        else:
+            return (f"RS Rating {rating}（偏弱）", "bad")
+
     # ─── 週線趨勢確認（滿分 10）──────────────────────────────
 
     def _score_weekly_trend(self, df) -> tuple:
@@ -502,14 +514,7 @@ class TechnicalAgent:
         else:
             tags.append(("EMA 排列不佳", "bad"))
 
-        if rs_rating >= 85:
-            tags.append((f"RS Rating {rs_rating}（極強）", "ok"))
-        elif rs_rating >= 70:
-            tags.append((f"RS Rating {rs_rating}（強勢）", "ok"))
-        elif rs_rating >= 50:
-            tags.append((f"RS Rating {rs_rating}（中等）", "warn"))
-        else:
-            tags.append((f"RS Rating {rs_rating}（偏弱）", "bad"))
+        tags.append(self.rs_rating_tag(rs_rating))
 
         if weekly.get("aligned"):
             tags.append(("週線趨勢確認", "ok"))

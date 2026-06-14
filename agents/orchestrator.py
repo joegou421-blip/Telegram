@@ -246,6 +246,13 @@ class Orchestrator:
         breakdown["rs_rating"] = new_rs_score
         tech["total"] = round(tech.get("total", 0) - old_rs_score + new_rs_score)
 
+        # 同步更新 tags 裡的 RS Rating 標籤（原本是用全市場百分位前的原始值）
+        tags = tech.get("tags", [])
+        for i, (label, t_type) in enumerate(tags):
+            if label.startswith("RS Rating"):
+                tags[i] = self.tech_agent.rs_rating_tag(new_rating)
+                break
+
         result["tech_score"]      = tech["total"]
         result["composite_score"] = self._calc_composite(tech["total"], result.get("fund_score", 0))
 

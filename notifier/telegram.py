@@ -129,6 +129,40 @@ class TelegramNotifier:
             "red":    "\n🔴 大盤紅燈，謹慎操作",
         }.get(gate, "")
 
+        # 板塊強度（只有每日掃描有，單股查詢沒有 sector_stats 對照組）
+        sector_block = ""
+        sector_score = result.get("sector_score")
+        if sector_score:
+            sector_block = (
+                f"\n🏷 板塊：{sector_score.get('label','')} "
+                f"排名{sector_score.get('rank_str','N/A')} · "
+                f"個股板塊排名 {sector_score.get('stock_rank_str','N/A')} · "
+                f"{sector_score.get('eps_label','')}"
+            )
+
+        # 倉位建議
+        position_block = ""
+        pos = result.get("position_size")
+        if pos:
+            if pos.get("final_pct", 0) > 0:
+                position_block = (
+                    f"\n\n📐 倉位建議：{pos['final_pct']}%\n"
+                    f"  {pos.get('reason','')}\n"
+                    f"  {pos.get('mult_reason','')}"
+                )
+            else:
+                position_block = f"\n\n📐 倉位建議：0%（{pos.get('reason','')}）"
+
+        # 持倉管理計劃
+        trade_block = ""
+        tm = result.get("trade_management")
+        if tm:
+            plan_lines = "\n".join(f"  {line}" for line in tm.get("management_plan", []))
+            trade_block = (
+                f"\n\n📋 持倉管理（風險 {tm.get('initial_risk_pct',0):.1f}%）:\n"
+                f"{plan_lines}"
+            )
+
         msg = (
             f"━━━━━━━━━━━━━━━━\n"
             f"{watchlist_line}"
@@ -151,6 +185,9 @@ class TelegramNotifier:
             f"Sector {f['sector_strength']}/20\n\n"
             f"🎯 突破點 ${breakout or 'N/A'}\n"
             f"🛑 止損 ${stop_loss:.2f}（ATR {atr_risk:.1f}%）"
+            f"{sector_block}"
+            f"{position_block}"
+            f"{trade_block}"
             f"{gate_warn}"
         )
 
