@@ -11,6 +11,7 @@ from agents.market_agent      import MarketAgent
 from data.fetcher              import DataFetcher
 from data.indicators           import normalize_rs_ratings, calc_sector_stats, calc_sector_score
 from watchlist.database        import Database
+from web                        import dashboard_data
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +127,7 @@ class Orchestrator:
                 result["cache_date"] = cached["cache_date"]
                 self._attach_earnings_info(result, ticker)
                 self._attach_trade_plan(result, market["gate"])
+                self._attach_sector_score(result)
                 self._attach_classification(result, market["gate"])
             return result
 
@@ -182,6 +184,7 @@ class Orchestrator:
             # 財報倒數警示（用 get_info 已抓到的 earnings_date，避免重複呼叫）+ 倉位/持倉管理建議
             self._attach_earnings_info(result, ticker, earnings_date=info.get("earnings_date"))
             self._attach_trade_plan(result, market_gate)
+            self._attach_sector_score(result)
             self._attach_classification(result, market_gate)
 
             # 存緩存（本地掃描時）
@@ -312,6 +315,15 @@ class Orchestrator:
 
         result["tech_score"]      = tech["total"]
         result["composite_score"] = self._calc_composite(tech["total"], result.get("fund_score", 0))
+
+    def _attach_sector_score(self, result: dict) -> None:
+        """單股查詢：用最近一次全市場掃描留下的板塊統計快取，算這隻股票的 sector_score"""
+        sector_stats = dashboard_data.load_sector_stats()
+        if not sector_stats:
+            return
+        sector    = result.get("sector", "Unknown") or "Unknown"
+        rs_rating = result.get("tech", {}).get("details", {}).get("rs_rating", 0) or 0
+        result["sector_score"] = calc_sector_score(result["ticker"], sector, rs_rating, sector_stats)
 
     def _attach_sector_ranks(self, candidates: list, sector_stats: dict) -> None:
         """補上每個板塊內，依 RS Rating 排序的個股清單，供 calc_sector_score 算個股排名用"""

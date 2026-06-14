@@ -5,7 +5,8 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-SNAPSHOT_PATH = os.path.join(os.path.dirname(__file__), "dashboard_snapshot.json")
+SNAPSHOT_PATH     = os.path.join(os.path.dirname(__file__), "dashboard_snapshot.json")
+SECTOR_STATS_PATH = os.path.join(os.path.dirname(__file__), "sector_stats_cache.json")
 
 
 def save_snapshot(scan_result: dict) -> None:
@@ -43,6 +44,26 @@ def load_snapshot() -> dict | None:
             return json.load(f)
     except Exception as e:
         logger.error(f"讀取 Dashboard 快取失敗: {e}")
+        return None
+
+
+def save_sector_stats(sector_stats: dict) -> None:
+    """把全市場掃描算出的板塊統計寫入本地 JSON，供單股查詢算 sector_score 用"""
+    try:
+        with open(SECTOR_STATS_PATH, "w", encoding="utf-8") as f:
+            json.dump(sector_stats, f, ensure_ascii=False, default=str)
+    except Exception as e:
+        logger.error(f"寫入板塊統計快取失敗: {e}")
+
+
+def load_sector_stats() -> dict | None:
+    if not os.path.exists(SECTOR_STATS_PATH):
+        return None
+    try:
+        with open(SECTOR_STATS_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.error(f"讀取板塊統計快取失敗: {e}")
         return None
 
 

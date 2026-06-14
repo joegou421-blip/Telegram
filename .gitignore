@@ -3,3 +3,4 @@ __pycache__/
 *.pyc
 .DS_Store
 web/dashboard_snapshot.json
+web/sector_stats_cache.json

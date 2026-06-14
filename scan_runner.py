@@ -34,8 +34,9 @@ def run_full_scan(orchestrator: Orchestrator, notifier: TelegramNotifier, db: Da
     # 檢查觀察清單
     _check_watchlist_alerts(db, orchestrator, notifier)
 
-    # 寫入 Dashboard 快取
+    # 寫入 Dashboard 快取 + 板塊統計快取（供單股查詢算 sector_score）
     dashboard_data.save_snapshot(scan_result)
+    dashboard_data.save_sector_stats(scan_result.get("sector_stats", {}))
 
     logger.info(f"=== 掃描完成，候選股 {len(candidates)} 隻 ===")
     return scan_result
