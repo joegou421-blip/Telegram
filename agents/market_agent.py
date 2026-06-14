@@ -4,7 +4,10 @@ import numpy as np
 import logging
 from data.fetcher import DataFetcher
 from data.indicators import add_all_indicators
-from config.settings import MARKET_GATE, AI_MODEL_FAST, OPENROUTER_API_KEY, FTD_MIN_GAIN, FTD_MIN_DAY
+from config.settings import (
+    MARKET_GATE, AI_MODEL_FAST, OPENROUTER_API_KEY, FTD_MIN_GAIN, FTD_MIN_DAY,
+    DISTRIBUTION_DAYS_LOOKBACK, DISTRIBUTION_DAYS_THRESHOLD, DISTRIBUTION_DAY_DECLINE_PCT,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -53,12 +56,19 @@ class MarketAgent:
             gate = GATE_YELLOW
             logger.info("Follow-Through Day 偵測到，紅燈升為黃燈")
 
+        # Distribution Days：累積到門檻時，提早把綠燈降為黃燈（比 EMA 風控更早示警）
+        dist_days = self._calc_distribution_days()
+        if dist_days >= DISTRIBUTION_DAYS_THRESHOLD and gate == GATE_GREEN:
+            gate = GATE_YELLOW
+            logger.info(f"Distribution Days {dist_days}/{DISTRIBUTION_DAYS_LOOKBACK}，綠燈降為黃燈")
+
         regime = self._classify_regime(gate, breadth, vix_data)
 
         return {
-            "gate":    gate,
-            "regime":  regime,
-            "summary": self._build_summary(gate, spy_data, qqq_data, vix_data, breadth, ftd, news),
+            "gate":              gate,
+            "regime":            regime,
+            "distribution_days": dist_days,
+            "summary": self._build_summary(gate, spy_data, qqq_data, vix_data, breadth, ftd, news, dist_days),
             "ftd":     ftd,
             "details": {
                 "spy":     spy_data,
@@ -148,6 +158,30 @@ class MarketAgent:
             signal = GATE_GREEN
         return {"signal": signal, "pct": round(pct, 2), "above": above, "total": total}
 
+    def _calc_distribution_days(self) -> int:
+        """
+        過去 DISTRIBUTION_DAYS_LOOKBACK 個交易日內，SPY 收盤跌幅超過
+        DISTRIBUTION_DAY_DECLINE_PCT 且成交量高於前一天的天數
+        """
+        try:
+            df = self.fetcher.get_ohlcv("SPY", days=60)
+            if df is None or len(df) < DISTRIBUTION_DAYS_LOOKBACK + 1:
+                return 0
+
+            recent  = df.tail(DISTRIBUTION_DAYS_LOOKBACK + 1)
+            closes  = recent["close"].values
+            volumes = recent["volume"].values
+
+            count = 0
+            for i in range(1, len(recent)):
+                pct_change = (closes[i] - closes[i - 1]) / closes[i - 1]
+                if pct_change < -DISTRIBUTION_DAY_DECLINE_PCT and volumes[i] > volumes[i - 1]:
+                    count += 1
+            return count
+        except Exception as e:
+            logger.warning(f"Distribution Days 計算失敗: {e}")
+            return 0
+
     def _detect_follow_through_day(self) -> dict:
         """
         Follow-Through Day 判斷：
@@ -229,7 +263,7 @@ class MarketAgent:
             logger.warning(f"AI 新聞分析失敗: {e}")
             return {"sentiment": "neutral", "summary": "分析失敗"}
 
-    def _build_summary(self, gate, spy, qqq, vix, breadth, ftd, news) -> str:
+    def _build_summary(self, gate, spy, qqq, vix, breadth, ftd, news, dist_days=0) -> str:
         gate_str = {"green": "綠燈", "yellow": "黃燈", "red": "紅燈"}[gate]
         spy_str  = (
             "EMA20/50 之上" if spy.get("above_ema20") and spy.get("above_ema50")
@@ -240,6 +274,7 @@ class MarketAgent:
         return (
             f"大盤{gate_str} · SPY {spy_str} · "
             f"VIX {vix.get('value', 'N/A')} · "
-            f"市場寬度 {int(breadth.get('pct', 0.5)*100)}%"
+            f"市場寬度 {int(breadth.get('pct', 0.5)*100)}% · "
+            f"Distribution Days {dist_days}/{DISTRIBUTION_DAYS_LOOKBACK}"
             f"{ftd_str}\n{news.get('summary', '')}"
         )

@@ -1,7 +1,10 @@
 import logging
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
-from config.settings import SCORE_THRESHOLD, EARNINGS_BUFFER_DAYS
+from config.settings import (
+    SCORE_THRESHOLD, EARNINGS_BUFFER_DAYS,
+    PEAD_THRESHOLD, DASHBOARD_TOP_N_CLASSIC, DASHBOARD_TOP_N_MOMENTUM,
+)
 from agents.technical_agent   import TechnicalAgent
 from agents.fundamental_agent import FundamentalAgent
 from agents.market_agent      import MarketAgent
@@ -71,6 +74,8 @@ class Orchestrator:
             sector    = c.get("sector", "Unknown") or "Unknown"
             rs_rating = c.get("tech", {}).get("details", {}).get("rs_rating", 0) or 0
             c["sector_score"] = calc_sector_score(c["ticker"], sector, rs_rating, sector_stats)
+            # 重算分類（這次有 sector_score，Leadership 更準確）
+            self._attach_classification(c, market["gate"])
 
         passed = [c for c in candidates if self._passes_threshold(c, market["gate"])]
         passed.sort(key=lambda x: x["composite_score"], reverse=True)
@@ -79,7 +84,24 @@ class Orchestrator:
             passed = [c for c in passed if c["composite_score"] >= 80]
 
         logger.info(f"通過門檻: {len(passed)} 隻")
-        return {"market": market, "candidates": passed, "sector_stats": sector_stats}
+
+        # Classic Setups Top N（依 Classic Ranking 排序）
+        classic_setups = [c for c in candidates if c["classification"] == "classic"]
+        classic_setups.sort(key=lambda x: x["classic_ranking"], reverse=True)
+        classic_setups = classic_setups[:DASHBOARD_TOP_N_CLASSIC]
+
+        # Momentum Monsters Top N（獨立區塊，依 Momentum Ranking 排序）
+        momentum_monsters = [c for c in candidates if c["pead_score"] >= PEAD_THRESHOLD]
+        momentum_monsters.sort(key=lambda x: x["momentum_ranking"], reverse=True)
+        momentum_monsters = momentum_monsters[:DASHBOARD_TOP_N_MOMENTUM]
+
+        return {
+            "market":            market,
+            "candidates":        passed,
+            "sector_stats":       sector_stats,
+            "classic_setups":     classic_setups,
+            "momentum_monsters":  momentum_monsters,
+        }
 
     # ─── 單股分析（優先讀緩存）────────────────────────────────
 
@@ -104,6 +126,7 @@ class Orchestrator:
                 result["cache_date"] = cached["cache_date"]
                 self._attach_earnings_info(result, ticker)
                 self._attach_trade_plan(result, market["gate"])
+                self._attach_classification(result, market["gate"])
             return result
 
         # 無緩存，即時分析
@@ -159,6 +182,7 @@ class Orchestrator:
             # 財報倒數警示（用 get_info 已抓到的 earnings_date，避免重複呼叫）+ 倉位/持倉管理建議
             self._attach_earnings_info(result, ticker, earnings_date=info.get("earnings_date"))
             self._attach_trade_plan(result, market_gate)
+            self._attach_classification(result, market_gate)
 
             # 存緩存（本地掃描時）
             if save_cache:
@@ -230,6 +254,39 @@ class Orchestrator:
         result["trade_management"] = self.tech_agent.calc_trade_management(
             details.get("entry_price", 0), details.get("stop_loss", 0)
         )
+
+    def _attach_classification(self, result: dict, market_gate: str) -> None:
+        """補上 Leadership / Timing / Ranking / Why / PEAD 分類（Pre-Market Decision Assistant）"""
+        tech, fund = result["tech"], result["fund"]
+        sector_score = result.get("sector_score")  # 單股查詢時為 None
+
+        leadership = self.tech_agent.calc_leadership_score(tech, fund, sector_score)
+        timing     = self.tech_agent.calc_timing_score(tech)
+        pead       = tech["details"].get("pead") or {"score": 0, "detected": False, "days_since": None,
+                                                        "gap_pct": 0, "vol_ratio": 0,
+                                                        "earnings_high": None, "reaction_date": None}
+
+        classic_ranking  = self.tech_agent.calc_classic_ranking(leadership["score"], timing["score"])
+        momentum_ranking = self.tech_agent.calc_momentum_ranking(leadership["score"], pead["score"])
+
+        is_classic  = self._passes_threshold(result, market_gate) and not fund.get("disqualified")
+        is_momentum = pead["score"] >= PEAD_THRESHOLD
+        classification = "classic" if is_classic else ("momentum" if is_momentum else "none")
+
+        result["leadership"]       = leadership
+        result["timing"]           = timing
+        result["classic_ranking"]  = round(classic_ranking, 1)
+        result["momentum_ranking"] = round(momentum_ranking, 1)
+        result["pead_score"]       = pead["score"]
+        result["classification"]   = classification
+        result["why_classic"]      = self.tech_agent.build_classic_why(tech, leadership, timing)
+        result["why_momentum"]     = self.tech_agent.build_momentum_why(tech, pead)
+        result["not_recommended_reasons"] = (
+            [] if classification != "none"
+            else self.tech_agent.build_not_recommended_reasons(tech, fund, leadership, timing)
+        )
+        result["pivot"] = tech["details"].get("breakout_point")
+        result["stop"]  = tech["details"].get("stop_loss")
 
     def _recalc_rs_score(self, result: dict) -> None:
         """RS Rating 經 normalize_rs_ratings 重算百分位後，同步更新 breakdown/total/composite"""

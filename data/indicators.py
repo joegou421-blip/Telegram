@@ -521,3 +521,89 @@ def calc_sector_score(ticker: str, sector: str, rs_rating: float,
         "eps_positive":    eps_positive,
         "stock_rank_str":  f"{stock_rank}/{total_stocks}" if stock_rank else "N/A",
     }
+
+
+def calc_pead_score(df: pd.DataFrame, lookback: int = 7) -> dict:
+    """
+    PEAD（財報後動能延續）分數，0-100，用價格行為代理財報反應日：
+    在最近 lookback 天內，找「跳空 + 爆量」最明顯的一天當作財報反應日。
+    找不到 -> score=0, detected=False。
+    找到 -> 依規則加總（不互斥）：
+      gap_pct > 8%                       -> +30
+      vol_ratio > 2                      -> +30
+      close > earnings_high               -> +20
+      elif close > earnings_high * 0.97   -> +10
+      close > ema20                       -> +10
+    """
+    result = {
+        "score": 0, "detected": False, "days_since": None,
+        "gap_pct": 0.0, "vol_ratio": 0.0,
+        "earnings_high": None, "reaction_date": None,
+    }
+
+    if df is None or len(df) < 25:
+        return result
+
+    work = df.copy()
+    if "ema20" not in work.columns:
+        work["ema20"] = calc_ema(work["close"], 20)
+    vol_sma20 = calc_sma(work["volume"], 20)
+
+    recent = work.tail(lookback)
+
+    best_idx   = None
+    best_gap   = 0.0
+    best_vol_ratio = 0.0
+
+    for i in range(len(recent)):
+        idx = recent.index[i]
+        pos = work.index.get_loc(idx)
+        if pos == 0:
+            continue
+
+        row       = work.iloc[pos]
+        prev_row  = work.iloc[pos - 1]
+        prev_close = prev_row["close"]
+        if not prev_close or prev_close == 0:
+            continue
+
+        gap_pct = abs(row["open"] - prev_close) / prev_close
+        baseline_vol = vol_sma20.iloc[pos - 1]
+        vol_ratio = (row["volume"] / baseline_vol) if baseline_vol and baseline_vol > 0 else 0.0
+
+        if gap_pct >= 0.04 and vol_ratio > best_vol_ratio:
+            best_idx       = idx
+            best_gap       = gap_pct
+            best_vol_ratio = vol_ratio
+
+    if best_idx is None:
+        return result
+
+    pos          = work.index.get_loc(best_idx)
+    reaction_row = work.iloc[pos]
+    earnings_high = float(reaction_row["high"])
+    close_now    = float(work["close"].iloc[-1])
+    ema20_now    = float(work["ema20"].iloc[-1])
+
+    score = 0
+    if best_gap > 0.08:
+        score += 30
+    if best_vol_ratio > 2:
+        score += 30
+    if close_now > earnings_high:
+        score += 20
+    elif close_now > earnings_high * 0.97:
+        score += 10
+    if close_now > ema20_now:
+        score += 10
+
+    result.update({
+        "score":         score,
+        "detected":      True,
+        "days_since":    len(work) - 1 - pos,
+        "gap_pct":       round(best_gap * 100, 1),
+        "vol_ratio":     round(best_vol_ratio, 2),
+        "earnings_high": round(earnings_high, 2),
+        "reaction_date": str(best_idx)[:10],
+    })
+    return result

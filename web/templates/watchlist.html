@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <title>觀察清單 - 盤前決策助手</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header>
+    <h1><a href="{{ url_for('dashboard') }}">📊 盤前決策助手</a></h1>
+    <nav>
+      <a href="{{ url_for('dashboard') }}">← 回 Dashboard</a>
+    </nav>
+  </header>
+
+  <section class="card">
+    <h2>👁 觀察清單</h2>
+    {% if not items %}
+    <p>觀察清單目前是空的。</p>
+    {% else %}
+    <table>
+      <thead>
+        <tr>
+          <th>Ticker</th><th>加入日期</th><th>加入價</th><th>技術面</th><th>基本面</th><th>止損</th><th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in items %}
+        <tr>
+          <td><a href="{{ url_for('stock_detail', ticker=item.ticker) }}">{{ item.ticker }}</a><br><small>{{ item.short_name }}</small></td>
+          <td>{{ item.added_at[:10] if item.added_at else '' }}</td>
+          <td>{{ item.price_added }}</td>
+          <td>{{ item.tech_score }}</td>
+          <td>{{ item.fund_score }}</td>
+          <td>{{ item.stop_loss }}</td>
+          <td>
+            <form action="{{ url_for('watchlist_remove', ticker=item.ticker) }}" method="post">
+              <button type="submit">🗑 移除</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </section>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

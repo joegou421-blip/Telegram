@@ -3,12 +3,13 @@ import pandas as pd
 import logging
 from config.settings import (
     TECH_WEIGHTS, ATR_MULTIPLIER,
+    CLASSIC_RANKING_WEIGHTS, MOMENTUM_RANKING_WEIGHTS, PEAD_LOOKBACK_DAYS,
 )
 from data.indicators import (
     add_all_indicators, is_sma200_rising,
     calc_updown_volume_ratio, calc_volume_ratio,
     calc_rs_rating, calc_rs_score, calc_volume_dryness, calc_weekly_ema_alignment,
-    calc_institutional_sweep, calc_pullback_score
+    calc_institutional_sweep, calc_pullback_score, calc_pead_score
 )
 
 logger = logging.getLogger(__name__)
@@ -56,6 +57,9 @@ class TechnicalAgent:
         sweep    = calc_institutional_sweep(df)
         pullback = calc_pullback_score(df, spy_rs=rs_rating, regime=regime)
 
+        # ── PEAD（財報後動能延續）分數，供 Momentum Monsters 用 ─
+        pead = calc_pead_score(df, lookback=PEAD_LOOKBACK_DAYS)
+
         return {
             "ticker":  ticker,
             "total":   round(total),
@@ -90,6 +94,7 @@ class TechnicalAgent:
                 "last_pullback_pct":  pattern_res.get("last_pullback_pct"),
                 "institutional_sweep": sweep,
                 "pullback":           pullback,
+                "pead":               pead,
             },
             "tags": self._build_tags(
                 ema_score, rs_rating, weekly, vol_score,
@@ -543,4 +548,176 @@ class TechnicalAgent:
         stop_loss   = entry_price - (atr * ATR_MULTIPLIER)
         risk_pct    = (entry_price - stop_loss) / entry_price
         return stop_loss, risk_pct
+
+    # ─── Leadership / Timing / Ranking / Why（Pre-Market Decision Assistant）──
+
+    def calc_leadership_score(self, tech: dict, fund: dict, sector_score: dict = None) -> dict:
+        """
+        Leadership (0-100)：個股強度，沿用既有分數重新組合
+        = RS Rating * 0.5 + 基本面總分 * 0.3 + 週線確認(100/50) * 0.1 + 板塊強度*100 * 0.1
+        """
+        details   = tech.get("details", {})
+        rs_rating = details.get("rs_rating", 50) or 0
+        fund_total = fund.get("total", 0) or 0
+        weekly_aligned = details.get("weekly_aligned", False)
+        weekly_component = 100 if weekly_aligned else 50
+
+        sector_component = 50.0
+        if sector_score:
+            sector_component = round((sector_score.get("score") or 0) * 100, 1)
+
+        score = (
+            rs_rating * 0.5
+            + fund_total * 0.3
+            + weekly_component * 0.1
+            + sector_component * 0.1
+        )
+        return {
+            "score": round(min(100, max(0, score)), 1),
+            "breakdown": {
+                "rs_rating":  rs_rating,
+                "fund_total": fund_total,
+                "weekly":     weekly_component,
+                "sector":     sector_component,
+            },
+        }
+
+    def calc_timing_score(self, tech: dict) -> dict:
+        """
+        Timing (0-100)：進場時機品質，四項各佔 25%
+        - EMA20 距離分
+        - Volume Dry-Up 分
+        - VCP/型態分
+        - Pivot 接近度分
+        """
+        details = tech.get("details", {})
+        breakdown = tech.get("breakdown", {})
+
+        deviation_pct = abs(tech.get("deviation_pct", 0) or 0)
+        if deviation_pct <= 1:
+            ema_score = 100
+        elif deviation_pct <= 2:
+            ema_score = 75
+        elif deviation_pct <= 3:
+            ema_score = 50
+        elif deviation_pct <= 5:
+            ema_score = 25
+        else:
+            ema_score = 0
+
+        dryness_score = (breakdown.get("volume_dryness", 0) or 0) * 10
+
+        pattern_score = (breakdown.get("pattern", 0) or 0) * 5
+
+        breakout_point = details.get("breakout_point")
+        entry_price = details.get("entry_price", 0)
+        if not breakout_point or entry_price <= 0:
+            pivot_score = 50
+        else:
+            pivot_pct = (breakout_point - entry_price) / entry_price
+            if pivot_pct <= 0:
+                pivot_score = 100
+            elif pivot_pct <= 0.02:
+                pivot_score = 90
+            elif pivot_pct <= 0.05:
+                pivot_score = 70
+            elif pivot_pct <= 0.10:
+                pivot_score = 40
+            else:
+                pivot_score = 20
+
+        score = (ema_score + dryness_score + pattern_score + pivot_score) / 4
+        return {
+            "score": round(min(100, max(0, score)), 1),
+            "breakdown": {
+                "ema20_distance": ema_score,
+                "volume_dryup":   round(dryness_score, 1),
+                "pattern":        round(pattern_score, 1),
+                "pivot":          pivot_score,
+            },
+        }
+
+    def calc_classic_ranking(self, leadership: float, timing: float) -> float:
+        return (leadership * CLASSIC_RANKING_WEIGHTS["leadership"]
+                + timing * CLASSIC_RANKING_WEIGHTS["timing"])
+
+    def calc_momentum_ranking(self, leadership: float, pead_score: float) -> float:
+        return (leadership * MOMENTUM_RANKING_WEIGHTS["leadership"]
+                + pead_score * MOMENTUM_RANKING_WEIGHTS["pead"])
+
+    def build_classic_why(self, tech: dict, leadership: dict, timing: dict) -> list:
+        details   = tech.get("details", {})
+        rs_rating = details.get("rs_rating", 0) or 0
+        deviation_pct = abs(tech.get("deviation_pct", 0) or 0)
+        pattern_score = tech.get("breakdown", {}).get("pattern", 0) or 0
+        pattern_type  = details.get("pattern_type", "")
+        dryness = details.get("volume_dryness", 1.0)
+        weekly_aligned = details.get("weekly_aligned", False)
+        grade = tech.get("grade", "C")
+
+        why = []
+        if rs_rating >= 90:
+            why.append("✓ RS 前10%")
+        elif rs_rating >= 70:
+            why.append("✓ RS 前30%")
+
+        if deviation_pct <= 2:
+            why.append("✓ EMA20 附近")
+
+        if pattern_score >= 15:
+            why.append(f"✓ {pattern_type} 形態完整")
+
+        if grade == "A":
+            why.append("✓ 回測 A 級")
+
+        if dryness <= 0.65:
+            why.append("✓ Volume Dry-Up")
+
+        if weekly_aligned:
+            why.append("✓ 週線多頭排列")
+
+        return why
+
+    def build_momentum_why(self, tech: dict, pead: dict) -> list:
+        details   = tech.get("details", {})
+        rs_rating = details.get("rs_rating", 0) or 0
+
+        why = []
+        if pead.get("detected") and (pead.get("days_since") is not None) and pead["days_since"] <= 7:
+            why.append("✓ Fresh PEAD")
+        if pead.get("gap_pct"):
+            why.append(f"✓ Gap {pead['gap_pct']:+.0f}%")
+        if pead.get("vol_ratio"):
+            why.append(f"✓ Volume {pead['vol_ratio']:.1f}x")
+        if rs_rating:
+            why.append(f"✓ RS {rs_rating:.0f}")
+
+        return why
+
+    def build_not_recommended_reasons(self, tech: dict, fund: dict,
+                                       leadership: dict, timing: dict) -> list:
+        details   = tech.get("details", {})
+        rs_rating = details.get("rs_rating", 0) or 0
+        deviation_pct = abs(tech.get("deviation_pct", 0) or 0)
+        pattern_score = tech.get("breakdown", {}).get("pattern", 0) or 0
+        grade = tech.get("grade", "C")
+        grade_reason = tech.get("grade_reason", "")
+
+        reasons = []
+        if rs_rating < 70:
+            reasons.append("× RS 不足")
+
+        if pattern_score < 8:
+            reasons.append("× 無有效型態")
+
+        if deviation_pct > 3:
+            reasons.append("× 距離 EMA20 過遠")
+
+        if grade == "C":
+            reasons.append(f"× 回測條件不符：{grade_reason}")
+
+        if fund.get("disqualified"):
+            reasons.append("× 財報倒數中，暫停新進場")
+
+        return reasons
 

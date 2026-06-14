@@ -75,3 +75,18 @@ CONSECUTIVE_DAYS_THRESHOLD = 3
 # Follow-Through Day 設定
 FTD_MIN_GAIN     = 0.017  # 最少上漲 1.7%
 FTD_MIN_DAY      = 4      # 反彈第幾天起才算
+
+# Distribution Days
+DISTRIBUTION_DAYS_LOOKBACK   = 25
+DISTRIBUTION_DAYS_THRESHOLD  = 6
+DISTRIBUTION_DAY_DECLINE_PCT = 0.002   # -0.2%
+
+# Classic / Momentum 排序權重
+CLASSIC_RANKING_WEIGHTS  = {"leadership": 0.4, "timing": 0.6}
+MOMENTUM_RANKING_WEIGHTS = {"leadership": 0.3, "pead": 0.7}
+PEAD_THRESHOLD     = 70
+PEAD_LOOKBACK_DAYS = 7
+
+# Dashboard 顯示數量
+DASHBOARD_TOP_N_CLASSIC  = 5
+DASHBOARD_TOP_N_MOMENTUM = 3

@@ -3,10 +3,13 @@ import pandas as pd
 import time
 import random
 import logging
+import threading
 from config.settings import SCREENER, POLYGON_API_KEY
 import requests
 
 logger = logging.getLogger(__name__)
+
+DOWNLOAD_TIMEOUT = 30  # 秒，避免 yf.download 卡死整個流程
 
 # S&P 500 + Nasdaq 100 完整名單
 SP500_NASDAQ100 = [
@@ -107,6 +110,40 @@ def get_candidate_tickers() -> list:
     return final
 
 
+def _download_with_timeout(batch: list, timeout: int) -> pd.DataFrame | None:
+    """
+    yf.download 偶發會卡死無回應，包一層 timeout 避免整個流程卡住。
+    用 daemon thread（而非 ThreadPoolExecutor）執行：逾時就放棄結果，
+    daemon thread 不會阻塞程式結束（即使該次下載仍卡在背景）。
+    """
+    result_box = {}
+
+    def _do_download():
+        try:
+            result_box["df"] = yf.download(
+                tickers  = " ".join(batch),
+                period   = "1y",
+                auto_adjust = True,
+                progress = False,
+                group_by = "ticker",
+                threads  = False,
+            )
+        except Exception as e:
+            result_box["error"] = e
+
+    t = threading.Thread(target=_do_download, daemon=True)
+    t.start()
+    t.join(timeout=timeout)
+
+    if t.is_alive():
+        logger.warning(f"yf.download 逾時（>{timeout}s）: {batch}")
+        return None
+    if "error" in result_box:
+        logger.warning(f"yf.download 失敗: {result_box['error']}")
+        return None
+    return result_box.get("df")
+
+
 def _batch_price_screen() -> list:
     passed  = []
     batches = [
@@ -122,17 +159,10 @@ def _batch_price_screen() -> list:
                 logger.info(f"等待 {delay:.1f}s...")
                 time.sleep(delay)
 
-            raw = yf.download(
-                tickers  = " ".join(batch),
-                period   = "1y",
-                auto_adjust = True,
-                progress = False,
-                group_by = "ticker",
-                threads  = False,
-            )
+            raw = _download_with_timeout(batch, DOWNLOAD_TIMEOUT)
 
-            if raw.empty:
-                logger.warning(f"第 {i+1} 批下載失敗，跳過")
+            if raw is None or raw.empty:
+                logger.warning(f"第 {i+1} 批下載失敗或逾時，跳過")
                 continue
 
             for ticker in batch:

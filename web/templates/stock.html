@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <title>{{ ticker }} - 盤前決策助手</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header>
+    <h1><a href="{{ url_for('dashboard') }}">📊 盤前決策助手</a></h1>
+    <nav>
+      <a href="{{ url_for('dashboard') }}">← 回 Dashboard</a>
+      <a href="{{ url_for('watchlist') }}">👁 觀察清單</a>
+    </nav>
+  </header>
+
+  {% if not result %}
+  <p class="empty">無法分析 {{ ticker }}，請確認股票代碼是否正確。</p>
+  {% else %}
+
+  <section class="card">
+    <h2>{{ result.ticker }} {{ result.short_name }}</h2>
+    <p>價格：${{ "%.2f"|format(result.price) }} · 技術面 {{ result.tech_score }} · 基本面 {{ result.fund_score }}</p>
+    {% if result.earnings_soon %}
+    <p class="warn">⚠️ 財報倒數中（{{ result.earnings_date }}），暫停新進場建議</p>
+    {% endif %}
+
+    {% if result.classification == 'classic' %}
+      <h3>✅ Classic Setup</h3>
+      <p>Leadership：{{ result.leadership.score }} ｜ Timing：{{ result.timing.score }} ｜ <b>Ranking：{{ result.classic_ranking }}</b></p>
+      <p>Why：{{ result.why_classic | join('　') }}</p>
+      <p>Pivot：{{ result.pivot }} ｜ Stop：{{ result.stop }}</p>
+
+    {% elif result.classification == 'momentum' %}
+      <h3>🚀 Momentum Monster</h3>
+      <p>Leadership：{{ result.leadership.score }} ｜ PEAD Score：{{ result.pead_score }} ｜ <b>Ranking：{{ result.momentum_ranking }}</b></p>
+      <p>Why：{{ result.why_momentum | join('　') }}</p>
+
+    {% else %}
+      <h3>未列入候選</h3>
+      <p>Leadership：{{ result.leadership.score }} ｜ Timing：{{ result.timing.score }}</p>
+      <p>{{ result.not_recommended_reasons | join('　') }}</p>
+    {% endif %}
+
+    <form action="{{ url_for('watchlist_add', ticker=result.ticker) }}" method="post">
+      {% if watchlist_entry %}
+        <button type="submit" disabled>👁 已在觀察清單</button>
+      {% else %}
+        <button type="submit">👁 加入觀察清單</button>
+      {% endif %}
+    </form>
+  </section>
+
+  <section class="card premarket" data-ticker="{{ result.ticker }}"
+           data-pivot="{{ result.pivot or '' }}" data-stop="{{ result.stop or '' }}">
+    <h3>Pre-market Alert</h3>
+    <p class="premarket-content">載入中...</p>
+  </section>
+
+  {% endif %}
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

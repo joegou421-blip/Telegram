@@ -176,6 +176,27 @@ class DataFetcher:
             return False
         return True
 
+    def get_premarket_quote(self, ticker: str) -> dict | None:
+        """
+        抓取最新（pre-market）報價與前收盤價，計算漲跌幅
+        僅供 Dashboard 顯示提醒，不影響任何排序/評分
+        """
+        try:
+            fi = yf.Ticker(ticker).fast_info
+            last = fi.get("lastPrice") or fi.get("last_price")
+            prev = (fi.get("previousClose") or fi.get("regularMarketPreviousClose")
+                    or fi.get("previous_close"))
+            if not last or not prev:
+                return None
+            return {
+                "last_price":  round(float(last), 2),
+                "prev_close":  round(float(prev), 2),
+                "change_pct":  round((float(last) - float(prev)) / float(prev) * 100, 2),
+            }
+        except Exception as e:
+            logger.warning(f"{ticker} pre-market 查詢失敗: {e}")
+            return None
+
     def get_next_earnings(self, ticker: str):
         """回傳下一次財報日期（pd.Timestamp）或 None"""
         try:

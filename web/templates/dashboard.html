@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <title>盤前決策助手</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header>
+    <h1>📊 盤前決策助手</h1>
+    <nav>
+      <form action="{{ url_for('run_scan') }}" method="post" id="scan-form">
+        <button type="submit">🔄 Run Scan</button>
+      </form>
+      <form action="{{ url_for('stock_detail', ticker='') }}" id="stock-form" onsubmit="return goToStock(event)">
+        <input type="text" id="ticker-input" placeholder="查詢個股，例如 IREN">
+        <button type="submit">查詢</button>
+      </form>
+      <a href="{{ url_for('watchlist') }}">👁 觀察清單</a>
+    </nav>
+  </header>
+
+  {% if not snapshot %}
+  <p class="empty">尚未掃描，請按「Run Scan」開始今晚的掃描。</p>
+  {% else %}
+
+  <section class="card">
+    <h2>1️⃣ Market Status</h2>
+    {% set gate = snapshot.market.gate %}
+    <p class="gate gate-{{ gate }}">
+      {% if gate == 'green' %}🟢{% elif gate == 'yellow' %}🟡{% else %}🔴{% endif %}
+      {{ snapshot.market.summary }}
+    </p>
+    <p>Distribution Days: {{ snapshot.market.distribution_days }}/25</p>
+    <p class="scan-time">最後掃描：{{ snapshot.scan_time }}</p>
+  </section>
+
+  <section class="card">
+    <h2>2️⃣ Classic Setups（Top 5）</h2>
+    {% if snapshot.classic_setups %}
+    <table>
+      <thead>
+        <tr>
+          <th>Ticker</th><th>Leadership</th><th>Timing</th><th>Ranking</th>
+          <th>Why</th><th>Pivot</th><th>Stop</th><th>Pre-market</th><th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for c in snapshot.classic_setups %}
+        <tr>
+          <td><a href="{{ url_for('stock_detail', ticker=c.ticker) }}">{{ c.ticker }}</a><br><small>{{ c.short_name }}</small></td>
+          <td>{{ c.leadership }}</td>
+          <td>{{ c.timing }}</td>
+          <td><b>{{ c.classic_ranking }}</b></td>
+          <td>{{ c.why | join('　') }}</td>
+          <td>{{ c.pivot }}</td>
+          <td>{{ c.stop }}</td>
+          <td class="premarket" data-ticker="{{ c.ticker }}" data-pivot="{{ c.pivot or '' }}" data-stop="{{ c.stop or '' }}">載入中...</td>
+          <td>
+            <form action="{{ url_for('watchlist_add', ticker=c.ticker) }}" method="post">
+              <button type="submit">👁 加入</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p>今晚無符合 Classic Setups 條件的股票。</p>
+    {% endif %}
+  </section>
+
+  <section class="card">
+    <h2>3️⃣ Momentum Monsters（Top 3）</h2>
+    {% if snapshot.momentum_monsters %}
+    <table>
+      <thead>
+        <tr>
+          <th>Ticker</th><th>Leadership</th><th>PEAD Score</th><th>Ranking</th>
+          <th>Why</th><th>Pre-market</th><th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for c in snapshot.momentum_monsters %}
+        <tr>
+          <td><a href="{{ url_for('stock_detail', ticker=c.ticker) }}">{{ c.ticker }}</a><br><small>{{ c.short_name }}</small></td>
+          <td>{{ c.leadership }}</td>
+          <td>{{ c.pead_score }}</td>
+          <td><b>{{ c.momentum_ranking }}</b></td>
+          <td>{{ c.why | join('　') }}</td>
+          <td class="premarket" data-ticker="{{ c.ticker }}" data-pivot="" data-stop="">載入中...</td>
+          <td>
+            <form action="{{ url_for('watchlist_add', ticker=c.ticker) }}" method="post">
+              <button type="submit">👁 加入</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p>今晚無 PEAD Score ≥ 70 的股票。</p>
+    {% endif %}
+  </section>
+
+  {% endif %}
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

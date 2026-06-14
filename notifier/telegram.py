@@ -129,6 +129,33 @@ class TelegramNotifier:
             "red":    "\n🔴 大盤紅燈，謹慎操作",
         }.get(gate, "")
 
+        # Pre-Market Decision Assistant 分類結果（Leadership/Timing/Ranking/Why）
+        classification = result.get("classification")
+        if classification == "classic":
+            decision_block = (
+                f"\n✅ Classic Setup\n"
+                f"Leadership {result['leadership']['score']} ｜ "
+                f"Timing {result['timing']['score']} ｜ "
+                f"Ranking {result['classic_ranking']}\n"
+                f"Why：{'　'.join(result.get('why_classic', []))}\n"
+                f"Pivot ${result.get('pivot')} ｜ Stop ${result.get('stop')}\n"
+            )
+        elif classification == "momentum":
+            decision_block = (
+                f"\n🚀 Momentum Monster\n"
+                f"Leadership {result['leadership']['score']} ｜ "
+                f"PEAD Score {result['pead_score']} ｜ "
+                f"Ranking {result['momentum_ranking']}\n"
+                f"Why：{'　'.join(result.get('why_momentum', []))}\n"
+            )
+        else:
+            decision_block = (
+                f"\n未列入候選\n"
+                f"Leadership {result.get('leadership', {}).get('score', 'N/A')} ｜ "
+                f"Timing {result.get('timing', {}).get('score', 'N/A')}\n"
+                f"{'　'.join(result.get('not_recommended_reasons', []))}\n"
+            )
+
         # 板塊強度（只有每日掃描有，單股查詢沒有 sector_stats 對照組）
         sector_block = ""
         sector_score = result.get("sector_score")
@@ -168,7 +195,8 @@ class TelegramNotifier:
             f"{watchlist_line}"
             f"{consecutive_line}"
             f"📊 {ticker}  {short_name}\n"
-            f"💰 ${price:.2f}  綜合評分：{composite}\n\n"
+            f"💰 ${price:.2f}  綜合評分：{composite}\n"
+            f"{decision_block}\n"
             f"📈 技術面 {tech_score}/100\n"
             f"  EMA {t['ema_alignment']}/20  "
             f"RS Rating {rs_rating:.0f}（{t['rs_rating']}/20）  "
