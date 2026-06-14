@@ -40,7 +40,7 @@ TECH_WEIGHTS = {
     "volume_struct":    20,   # 成交量結構
     "volume_dryness":   10,   # 突破前成交量乾燥度
     "pattern":          20,   # VCP / Cup & Handle
-    "atr_risk":          5,   # ATR 止損合理性
+    # ATR 止損僅供倉位/停損參考，不計入選股分數（中性股ATR常超過8%，納入會排除潛力股）
 }
 
 # 基本面評分權重

@@ -142,10 +142,6 @@ class Orchestrator:
                 logger.info(f"{ticker} 排除: {fund['reason']}")
                 return None
 
-            if tech["details"]["atr_risk_pct"] > 8:
-                logger.info(f"{ticker} 排除: ATR 風險過大")
-                return None
-
             composite = self._calc_composite(tech["total"], fund["total"])
 
             result = {

@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import logging
 from config.settings import (
-    TECH_WEIGHTS, ATR_MULTIPLIER, MAX_ATR_RISK_PCT,
+    TECH_WEIGHTS, ATR_MULTIPLIER,
 )
 from data.indicators import (
     add_all_indicators, is_sma200_rising,
@@ -31,10 +31,12 @@ class TechnicalAgent:
         vol_score              = self._score_volume(df)
         dryness_score, dryness = self._score_volume_dryness(df)
         pattern_res            = self._score_pattern(ticker, df)
-        atr_score, stop_loss, atr_risk_pct = self._score_atr(last)
+        stop_loss, atr_risk_pct = self._calc_atr_stop(last)
 
+        # ATR 止損僅供倉位/停損參考，不計入選股分數
+        # 中性股的 ATR 常會超過8%，若納入評分會排除掉大量有潛力的股票
         total = (ema_score + rs_score + weekly_score +
-                 vol_score + dryness_score + pattern_res["score"] + atr_score)
+                 vol_score + dryness_score + pattern_res["score"])
 
         # ── 個股評級（A/B/C）木桶效應 ───────────────────────
         # 只有真正找到 VCP 形態（score > 0）才用 last_pullback_pct 評級
@@ -67,7 +69,6 @@ class TechnicalAgent:
                 "volume_struct":  vol_score,
                 "volume_dryness": dryness_score,
                 "pattern":        pattern_res["score"],
-                "atr_risk":       atr_score,
             },
             "details": {
                 "ema_layers_ok":      self._count_ema_layers(last),
@@ -530,20 +531,11 @@ class TechnicalAgent:
 
         return tags
 
-    def _score_atr(self, last) -> tuple:
+    def _calc_atr_stop(self, last) -> tuple:
+        """計算 ATR 止損價與風險百分比，僅供倉位/停損參考，不計入選股分數"""
         entry_price = last["close"]
         atr         = last["atr14"]
         stop_loss   = entry_price - (atr * ATR_MULTIPLIER)
         risk_pct    = (entry_price - stop_loss) / entry_price
-
-        if risk_pct <= 0.04:
-            score = 5
-        elif risk_pct <= 0.06:
-            score = 4
-        elif risk_pct <= 0.08:
-            score = 2
-        else:
-            score = 0
-
-        return score, stop_loss, risk_pct
+        return stop_loss, risk_pct
 
