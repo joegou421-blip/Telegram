@@ -39,6 +39,7 @@ class FundamentalAgent:
             "total":    round(total),
             "disqualified": False,
             "eps_quarters": financials.get("eps_quarters", []),
+            "revenue_quarters": financials.get("revenue_quarters", []),
             "breakdown": {
                 "eps_acceleration": eps_score,
                 "revenue_margin":   rev_score,

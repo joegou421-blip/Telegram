@@ -1,5 +1,10 @@
 import pandas as pd
 import numpy as np
+from config.settings import (
+    EPS_RADAR_DAVIS_YOY_MIN, EPS_RADAR_DAVIS_QOQ_MIN, EPS_RADAR_DAVIS_SECTOR_RANK_MAX,
+    EPS_RADAR_WEAK_SECTOR_RANK_MIN, EPS_RADAR_WEAK_RS_MIN,
+    EPS_RADAR_WEAK_REV_YOY_MAX, EPS_RADAR_WEAK_EPS_YOY_MAX,
+)
 
 
 def calc_ema(series: pd.Series, period: int) -> pd.Series:
@@ -520,6 +525,54 @@ def calc_sector_score(ticker: str, sector: str, rs_rating: float,
         "rs_median":       rs_median,
         "eps_positive":    eps_positive,
         "stock_rank_str":  f"{stock_rank}/{total_stocks}" if stock_rank else "N/A",
+    }
+
+
+def calc_eps_radar(eps_quarters: list, revenue_quarters: list,
+                    sector_rank: int = None, rs_rating: float = None) -> dict:
+    """
+    EPS 雙向雷達：個股標籤（Tag），不計分，只用來解釋 Why。
+    eps_quarters / revenue_quarters：最近5季，index 0 = 最新季
+
+    - 🚀 戴維斯雙擊：板塊 RS 前 N 強 且 個股 EPS QoQ/YoY 顯著加速
+    - 📈 谷底大復甦：去年同期虧損，今年同期轉盈
+    - ⚠️ 偽強勢假突破：個股 RS 很高，但板塊很弱且營收/EPS 都沒跟上
+    回傳 {"tags": [(label, why_text), ...], "eps_qoq_pct", "eps_yoy_pct", "rev_yoy_pct"}
+    """
+    tags = []
+    eps_qoq_pct = eps_yoy_pct = rev_yoy_pct = None
+
+    if len(eps_quarters) >= 5:
+        e0, e1, e4 = eps_quarters[0], eps_quarters[1], eps_quarters[4]
+        eps_qoq_pct = round((e0 - e1) / abs(e1) * 100, 1) if e1 != 0 else 0.0
+        eps_yoy_pct = round((e0 - e4) / abs(e4) * 100, 1) if e4 != 0 else 0.0
+
+        if (eps_yoy_pct >= EPS_RADAR_DAVIS_YOY_MIN
+                and eps_qoq_pct >= EPS_RADAR_DAVIS_QOQ_MIN
+                and sector_rank is not None and sector_rank <= EPS_RADAR_DAVIS_SECTOR_RANK_MAX):
+            tags.append((
+                "🚀 戴維斯雙擊",
+                f"EPS YoY {eps_yoy_pct:+.0f}%，QoQ {eps_qoq_pct:+.0f}%，板塊排名 #{sector_rank}",
+            ))
+
+        if e4 < 0 and e0 > 0:
+            tags.append(("📈 谷底大復甦", f"EPS 由 {e4:.2f} → {e0:.2f}"))
+
+    if len(revenue_quarters) >= 5:
+        r0, r4 = revenue_quarters[0], revenue_quarters[4]
+        rev_yoy_pct = round((r0 - r4) / abs(r4) * 100, 1) if r4 != 0 else 0.0
+
+    if (rs_rating is not None and rs_rating >= EPS_RADAR_WEAK_RS_MIN
+            and sector_rank is not None and sector_rank >= EPS_RADAR_WEAK_SECTOR_RANK_MIN
+            and rev_yoy_pct is not None and rev_yoy_pct < EPS_RADAR_WEAK_REV_YOY_MAX
+            and (eps_yoy_pct is None or eps_yoy_pct < EPS_RADAR_WEAK_EPS_YOY_MAX)):
+        tags.append(("⚠️ 偽強勢", "RS 很高，但營收/EPS 未跟上"))
+
+    return {
+        "tags":        tags,
+        "eps_qoq_pct": eps_qoq_pct,
+        "eps_yoy_pct": eps_yoy_pct,
+        "rev_yoy_pct": rev_yoy_pct,
     }
 
 

@@ -4,12 +4,13 @@ from concurrent.futures import ThreadPoolExecutor
 from config.settings import (
     SCORE_THRESHOLD, EARNINGS_BUFFER_DAYS,
     PEAD_THRESHOLD, DASHBOARD_TOP_N_CLASSIC, DASHBOARD_TOP_N_MOMENTUM,
+    WHY_MAX_ITEMS,
 )
 from agents.technical_agent   import TechnicalAgent
 from agents.fundamental_agent import FundamentalAgent
 from agents.market_agent      import MarketAgent
 from data.fetcher              import DataFetcher
-from data.indicators           import normalize_rs_ratings, calc_sector_stats, calc_sector_score
+from data.indicators           import normalize_rs_ratings, calc_sector_stats, calc_sector_score, calc_eps_radar
 from watchlist.database        import Database
 from web                        import dashboard_data
 
@@ -276,17 +277,41 @@ class Orchestrator:
         is_momentum = pead["score"] >= PEAD_THRESHOLD
         classification = "classic" if is_classic else ("momentum" if is_momentum else "none")
 
+        # EPS 雙向雷達（戴維斯雙擊 / 谷底大復甦 / 偽強勢，標籤用，不計分）
+        sector_rank = None
+        rank_str = (sector_score or {}).get("rank_str")
+        if rank_str and rank_str != "N/A":
+            try:
+                sector_rank = int(rank_str.split("/")[0])
+            except (ValueError, IndexError):
+                sector_rank = None
+
+        eps_radar = calc_eps_radar(
+            fund.get("eps_quarters", []),
+            fund.get("revenue_quarters", []),
+            sector_rank=sector_rank,
+            rs_rating=tech["details"].get("rs_rating"),
+        )
+        result["eps_radar"] = eps_radar
+        radar_labels = [label for label, _ in eps_radar["tags"]]
+
+        def _merge_why(base_why: list) -> list:
+            if not radar_labels:
+                return base_why
+            keep = max(0, WHY_MAX_ITEMS - len(radar_labels))
+            return base_why[:keep] + radar_labels
+
         result["leadership"]       = leadership
         result["timing"]           = timing
         result["classic_ranking"]  = round(classic_ranking, 1)
         result["momentum_ranking"] = round(momentum_ranking, 1)
         result["pead_score"]       = pead["score"]
         result["classification"]   = classification
-        result["why_classic"]      = self.tech_agent.build_classic_why(tech, leadership, timing)
-        result["why_momentum"]     = self.tech_agent.build_momentum_why(tech, pead)
+        result["why_classic"]      = _merge_why(self.tech_agent.build_classic_why(tech, leadership, timing))
+        result["why_momentum"]     = _merge_why(self.tech_agent.build_momentum_why(tech, pead))
         result["not_recommended_reasons"] = (
             [] if classification != "none"
-            else self.tech_agent.build_not_recommended_reasons(tech, fund, leadership, timing)
+            else _merge_why(self.tech_agent.build_not_recommended_reasons(tech, fund, leadership, timing))
         )
         result["pivot"] = tech["details"].get("breakout_point")
         result["stop"]  = tech["details"].get("stop_loss")

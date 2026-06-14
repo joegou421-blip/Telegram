@@ -87,6 +87,16 @@ MOMENTUM_RANKING_WEIGHTS = {"leadership": 0.3, "pead": 0.7}
 PEAD_THRESHOLD     = 70
 PEAD_LOOKBACK_DAYS = 7
 
+# EPS 雙向雷達（個股標籤，不計分，只解釋 Why）
+EPS_RADAR_DAVIS_YOY_MIN   = 25   # 戴維斯雙擊：EPS YoY 門檻
+EPS_RADAR_DAVIS_QOQ_MIN   = 10   # 戴維斯雙擊：EPS QoQ 門檻
+EPS_RADAR_DAVIS_SECTOR_RANK_MAX = 3   # 戴維斯雙擊：板塊 RS 排名門檻（前N強）
+EPS_RADAR_WEAK_SECTOR_RANK_MIN  = 20  # 偽強勢：板塊 RS 排名門檻（第N弱之後，視板塊分類粒度而定）
+EPS_RADAR_WEAK_RS_MIN     = 90   # 偽強勢：個股 RS Rating 門檻
+EPS_RADAR_WEAK_REV_YOY_MAX = 5   # 偽強勢：營收 YoY 上限
+EPS_RADAR_WEAK_EPS_YOY_MAX = 10  # 偽強勢：EPS YoY 上限
+WHY_MAX_ITEMS = 4   # Why Summary 最多顯示幾條
+
 # Dashboard 顯示數量
 DASHBOARD_TOP_N_CLASSIC  = 5
 DASHBOARD_TOP_N_MOMENTUM = 3
