@@ -126,17 +126,17 @@ class TechnicalAgent:
 
     @staticmethod
     def rs_rating_to_score(rating: float) -> float:
-        """RS Rating (1-99) 換算成 RS breakdown 分數（滿分15）"""
+        """RS Rating (1-99) 換算成 RS breakdown 分數（滿分20）"""
         if rating >= 90:
-            return 15
+            return 20
         elif rating >= 80:
-            return 12
+            return 16
         elif rating >= 70:
-            return 9
+            return 12
         elif rating >= 60:
-            return 6
+            return 8
         elif rating >= 50:
-            return 3
+            return 4
         else:
             return 0
 

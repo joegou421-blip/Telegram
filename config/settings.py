@@ -35,7 +35,7 @@ SCORE_THRESHOLD = {
 # 技術面評分權重
 TECH_WEIGHTS = {
     "ema_alignment":    20,   # 降低，騰出空間給新指標
-    "rs_rating":        15,   # RS Rating（跑贏多少股票）
+    "rs_rating":        20,   # RS Rating（跑贏多少股票）；含原ATR的5分，RS是更核心的swing指標
     "weekly_trend":     10,   # 週線確認
     "volume_struct":    20,   # 成交量結構
     "volume_dryness":   10,   # 突破前成交量乾燥度
