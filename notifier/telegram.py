@@ -210,7 +210,6 @@ class TelegramNotifier:
         payload = {
             "chat_id":    TELEGRAM_CHAT_ID,
             "text":       text,
-            "parse_mode": "HTML",
         }
         if reply_markup:
             payload["reply_markup"] = reply_markup
